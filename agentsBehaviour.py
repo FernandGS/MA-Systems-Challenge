@@ -5,33 +5,21 @@ from matplotlib.animation import FuncAnimation
 
 # --- Define Agents ---
 
-class Trash(ap.Agent):
-    def setup(self):
-        self.collected = False
-
-
 class Bin(ap.Agent):
     def setup(self):
-        self.trash_collected = 0
-
-    def manage(self, trash_list):
-        for t in trash_list:
-            if self.model.space.positions[self] == self.model.space.positions[t]:
-                t.collected = True
-                self.trash_collected += 1
+        self.messages_exchanged = 0  # optional attribute for future use
 
 
 class Truck(ap.Agent):
+    def setup(self):
+        self.distance_traveled = 0
+        self.messages_exchanged = 0
+
     def step(self):
         # Move randomly on the grid
         direction = random.choice([(1,0), (-1,0), (0,1), (0,-1)])
         self.model.space.move_by(self, direction)
-
-        # Collect trash if present
-        for t in self.model.trash:
-            if (not t.collected 
-                and self.model.space.positions[self] == self.model.space.positions[t]):
-                t.collected = True
+        self.distance_traveled += 1
 
 
 # --- Define Model ---
@@ -42,26 +30,22 @@ class WasteModel(ap.Model):
 
         self.bins = ap.AgentList(self, 5, Bin)
         self.trucks = ap.AgentList(self, 3, Truck)
-        self.trash = ap.AgentList(self, 30, Trash)
 
+        # Place bins randomly
         self.space.add_agents(self.bins, random=True)
-        self.space.add_agents(self.trucks, random=True)
-        self.space.add_agents(self.trash, random=True)
+
+        # FIXED positions for trucks
+        fixed_positions = [(0, 0), (0, 19), (19, 0)]
+        self.space.add_agents(self.trucks, positions=fixed_positions)
 
     def step(self):
-        self.trucks.step()
-        for b in self.bins:
-            b.manage(self.trash)
-
-    def update(self):
-        if all(t.collected for t in self.trash):
-            self.stop()
+        self.trucks.step()  # bins are static, trucks move
 
 
 # --- Visualization with Matplotlib ---
 
 model = WasteModel()
-model.setup()  # <-- FIX: Initialize agents before animation
+model.setup()  # Initialize agents
 
 fig, ax = plt.subplots(figsize=(5, 5))
 
@@ -76,12 +60,6 @@ def draw_frame(frame):
     # Step the model
     model.step()
 
-    # Draw trash
-    for t in model.trash:
-        if not t.collected:
-            x, y = model.space.positions[t]
-            ax.plot(x, y, "go", markersize=6)  # green circles
-
     # Draw bins
     for b in model.bins:
         x, y = model.space.positions[b]
@@ -90,7 +68,7 @@ def draw_frame(frame):
     # Draw trucks
     for tr in model.trucks:
         x, y = model.space.positions[tr]
-        ax.plot(x, y, "r^", markersize=10)  # red triangles
+        ax.plot(x, y, "^", color="purple", markersize=10)  # purple triangles
 
-ani = FuncAnimation(fig, draw_frame, frames=50, interval=500, repeat=False)
+ani = FuncAnimation(fig, draw_frame, frames=100, interval=500, repeat=False)
 plt.show()
