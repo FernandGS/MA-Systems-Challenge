@@ -316,7 +316,7 @@ if __name__ == "__main__":
     parameters = {
         'num_agents': num_agents,
         'num_waste_locations': num_waste,
-        'grid_size': 100,
+        'grid_size': 20,
         'agent_capacity': 20,
         'bin_waste_min': 5,
         'bin_waste_max': 15,
@@ -327,3 +327,65 @@ if __name__ == "__main__":
     model.run()
     print("\n--- Simulation Finished ---")
     print(model.simulation_log.get('summary_metrics', {}))
+
+    # --- Export Unity offline JSON (SimData shape) --- #
+    def export_unity_simdata(model: WasteModel, outfile: str = 'sim_run_pathObj.json'):
+        log = model.simulation_log
+        summary = log.get('summary_metrics', {})
+        # Build collected map
+        collected_map = {a.id: 0 for a in model.trucks}
+        for ev in log['events']:
+            if ev.get('type') == 'SERVICE' and ev.get('agent_id') is not None:
+                collected_map[ev['agent_id']] += ev.get('amount', 0)
+        # Paths already in agent_paths list of dicts -> transform to ints
+        agents_json = []
+        for a in model.trucks:
+            path_key = f"agent_{a.id}"
+            raw_path = log['agent_paths'].get(path_key, [])
+            # raw_path = [{'x': float, 'y': float}, ...]
+            int_path = [{'x': int(round(p['x'])), 'y': int(round(p['y']))} for p in raw_path]
+            start = int_path[0] if int_path else {'x': int(round(a.pos[0])), 'y': int(round(a.pos[1]))}
+            agents_json.append({
+                'id': a.id,
+                'start': [start['x'], start['y']],
+                'pathObj': int_path,
+                'distance': float(summary.get('agent_travel_distances', {}).get(path_key, 0.0)),
+                'collected': collected_map.get(a.id, 0),
+                'capacity': a.capacity
+            })
+        bins_json = []
+        for b in model.bins:
+            bins_json.append({
+                'id': b.id,
+                'pos': [int(round(b.pos[0])), int(round(b.pos[1]))],
+                'initial': b.initial,
+                'remaining': b.remaining
+            })
+        events_json = []
+        for ev in log['events']:
+            events_json.append({
+                't': ev.get('step', 0),
+                'type': ev.get('type'),
+                'agent': ev.get('agent_id') if ev.get('agent_id') is not None else -1,
+                'bin': ev.get('waste_id') if ev.get('waste_id') is not None else -1,
+                'amount': ev.get('amount', 0)
+            })
+        distances = list(summary.get('agent_travel_distances', {}).values())
+        avg_distance = sum(distances)/len(distances) if distances else 0.0
+        simdata = {
+            'grid': {'width': model.p.grid_size, 'height': model.p.grid_size, 'depot': [0, 0]},
+            'agents': agents_json,
+            'bins': bins_json,
+            'events': events_json,
+            'metrics': {
+                'total_collected': int(summary.get('total_waste_collected', 0)),
+                'avg_distance_per_agent': avg_distance,
+                'negotiation_messages': int(summary.get('negotiation_messages', 0)),
+                'steps': int(summary.get('step_all_dumped', 0))
+            }
+        }
+        with open(outfile, 'w') as f:
+            json.dump(simdata, f, indent=2)
+        print(f"Unity offline JSON exported -> {outfile} (agents={len(agents_json)}, bins={len(bins_json)})")
+
+    export_unity_simdata(model)
