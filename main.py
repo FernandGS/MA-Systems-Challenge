@@ -2,11 +2,14 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from models.waste_model import WasteModel
 
-# Initialize model
-model = WasteModel()
+parameters = {
+    'capacity_max': 100,
+    'fill_step': 1
+}
+
+model = WasteModel(parameters)
 model.setup()
 
-# Visualization
 fig, ax = plt.subplots(figsize=(5,5))
 
 def draw_frame(frame):
@@ -20,10 +23,17 @@ def draw_frame(frame):
     # Step the model
     model.step()
 
-    # Draw bins
+    # Draw bins with color depending on fill
     for b in model.bins:
         x, y = model.space.positions[b]
-        ax.plot(x, y, "bs", markersize=10)
+        percent = b.fill / b.capacity_max
+        if percent <= 0.2:
+            color = "green"
+        elif percent <= 0.6:
+            color = "yellow"
+        else:
+            color = "red"
+        ax.plot(x, y, "s", markersize=10, color=color)
 
     # Draw trucks
     for tr in model.trucks:
