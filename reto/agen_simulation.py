@@ -274,8 +274,8 @@ class WasteModel(ap.Model):
                 self.stop()
 
     def end(self):
-        # Summary metrics
-        self.simulation_log["summary_metrics"] = {
+        # Summary metrics (detailed internal log)
+        detailed_metrics = {
             'total_initial_waste': sum(b.initial for b in self.bins),
             'total_waste_collected': self.total_waste_collected,
             'total_remaining_waste': sum(b.remaining for b in self.bins),
@@ -288,17 +288,72 @@ class WasteModel(ap.Model):
             'step_bins_empty': self.step_bins_empty,
             'step_all_dumped': self.t
         }
+        self.simulation_log["summary_metrics"] = detailed_metrics
         self.simulation_log['final_bins'] = [{
             'id': b.id,
             'initial': b.initial,
             'remaining': b.remaining
         } for b in self.bins]
-        # pathObj parity
+        # pathObj parity for internal log
         self.simulation_log['agent_paths_obj'] = {k: [{'x': p['x'], 'y': p['y']} for p in v]
                                                   for k, v in self.simulation_log['agent_paths'].items()}
-        with open('simulation_log.json', 'w') as f:
-            json.dump(self.simulation_log, f, indent=4)
-        print("\nSimulation log saved to simulation_log.json")
+
+        # ---- Build Unity SimData format ---- #
+        # Collected amount per agent
+        collected_map = {a.id: 0 for a in self.trucks}
+        for ev in self.simulation_log['events']:
+            if ev.get('type') == 'SERVICE' and ev.get('agent_id') is not None:
+                collected_map[ev['agent_id']] += ev.get('amount', 0)
+        # Agent paths -> int positions
+        agents_json = []
+        for a in self.trucks:
+            key = f"agent_{a.id}"
+            raw_path = self.simulation_log['agent_paths'].get(key, [])
+            int_path = [{'x': int(round(p['x'])), 'y': int(round(p['y']))} for p in raw_path]
+            start = int_path[0] if int_path else {'x': int(round(a.pos[0])), 'y': int(round(a.pos[1]))}
+            agents_json.append({
+                'id': a.id,
+                'start': [start['x'], start['y']],
+                'pathObj': int_path,
+                'distance': float(detailed_metrics['agent_travel_distances'][f'agent_{a.id}']),
+                'collected': collected_map.get(a.id, 0),
+                'capacity': a.capacity
+            })
+        bins_json = [{
+            'id': b.id,
+            'pos': [int(round(b.pos[0])), int(round(b.pos[1]))],
+            'initial': b.initial,
+            'remaining': b.remaining
+        } for b in self.bins]
+        events_json = [{
+            't': ev.get('step', 0),
+            'type': ev.get('type'),
+            'agent': ev.get('agent_id') if ev.get('agent_id') is not None else -1,
+            'bin': ev.get('waste_id') if ev.get('waste_id') is not None else -1,
+            'amount': ev.get('amount', 0)
+        } for ev in self.simulation_log['events']]
+        distances = list(detailed_metrics['agent_travel_distances'].values())
+        avg_distance = sum(distances) / len(distances) if distances else 0.0
+        simdata = {
+            'grid': {'width': self.p.grid_size, 'height': self.p.grid_size, 'depot': [0, 0]},
+            'agents': agents_json,
+            'bins': bins_json,
+            'events': events_json,
+            'metrics': {
+                'total_collected': int(detailed_metrics['total_waste_collected']),
+                'avg_distance_per_agent': avg_distance,
+                'negotiation_messages': int(detailed_metrics['negotiation_messages']),
+                'steps': int(detailed_metrics['step_all_dumped'])
+            }
+        }
+        # Determine Unity output filename (allow parameter override p.unity_output_name)
+        unity_name = getattr(self.p, 'unity_output_name', 'sim_run_pathObj.json')
+        with open(unity_name, 'w') as f:
+            json.dump(simdata, f, indent=2)
+        # Preserve the full detailed internal log separately
+        with open('full_log.json', 'w') as f:
+            json.dump(self.simulation_log, f, indent=2)
+        print(f"\nUnity SimData saved to {unity_name}; full detailed log in full_log.json")
 
     def log_event(self, step, event_type, agent_id, waste_id, amount=None):
         event = {"step": step, "type": event_type, "agent_id": agent_id, "waste_id": waste_id}
@@ -316,7 +371,7 @@ if __name__ == "__main__":
     parameters = {
         'num_agents': num_agents,
         'num_waste_locations': num_waste,
-        'grid_size': 20,
+        'grid_size': 150,
         'agent_capacity': 20,
         'bin_waste_min': 5,
         'bin_waste_max': 15,
