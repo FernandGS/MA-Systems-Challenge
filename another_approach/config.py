@@ -25,7 +25,7 @@ CONFIG = {
         [6,11],[11,7],[7,3],
         [9,7]
     ],
-    "DEPOT": (100, 80),
+    "DEPOT": (95, 80),
     "SIDEWALK_OFFSET_M": 2.0,
     "N_BINS": 8,
     "BIN_CAPACITY": 100,
