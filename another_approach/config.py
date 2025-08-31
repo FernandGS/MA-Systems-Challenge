@@ -54,11 +54,8 @@ CONFIG = {
     "OUTAGE_PENALTY_EUR": 1000.0,
 
     # ---------- negotiation / dispatch ----------
-    # Bins predicted to overflow within this horizon count as "urgent".
     "URGENCY_HORIZON_S": 120,
-    # Collect bins already above this fill fraction even if not yet urgent.
     "OPPORTUNISTIC_FILL_FRAC": 0.60,
-
 
     # ---------- RL ----------
     "DT": 1.0,
@@ -73,6 +70,16 @@ CONFIG = {
     "TARGET_UPDATE": 100,
     "REWARD_SCALE": 0.01,
     "MAX_PENALTIES_PER_TICK": 8,
+
+    # ---------- anti-churn & batching (NEW, conservative defaults) ----------
+    # How long to keep following a planned route before WAIT is honored
+    "ROUTE_FREEZE_STEPS": 6,
+    # Minimum steps after an assignment before the truck is considered idle again
+    "ASSIGN_HOLD_STEPS": 10,
+    # After deciding to go depot, keep intent for this many steps
+    "DEPOT_LOCK_STEPS": 8,
+    # Auto-plan depot when load >= NEAR_FULL_FRAC * capacity (or low energy)
+    "NEAR_FULL_FRAC": 0.90,
 
     # ---------- export ----------
     "JSON_EXPORT_PATH": "sim_day.json"

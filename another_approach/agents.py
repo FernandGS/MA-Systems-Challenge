@@ -47,19 +47,22 @@ class Truck:
     route_pts: List[Point] = field(default_factory=list)
     route_i: int = 0
 
+    # anti-churn / batching
+    route_freeze_steps: int = 0
+    assign_hold_steps: int = 0
+    go_depot_lock_steps: int = 0
+    stops_since_depot: int = 0
+
     # ---------------------------------------------------------------------
     # Utilities
     # ---------------------------------------------------------------------
     def _can_return_to_depot(self, depot: Point) -> bool:
-        """Check if current energy allows getting back to depot with reserve."""
         meters_left = self.energy / max(1e-9, self.cfg["ENERGY_PER_M"])
         return meters_left >= (dist(self.pos, depot) + self.cfg["ENERGY_RESERVE_M"])
 
     def assign_target(self, route_pts, bin_id, final_target):
-        # de-dupe route
         self.route_pts = [p for i, p in enumerate(route_pts)
                           if i == 0 or dist(route_pts[i - 1], p) > 1e-3]
-        # drop leading point if it's basically current position
         if self.route_pts and dist(self.pos, self.route_pts[0]) < 0.5:
             self.route_i = 1
         else:
@@ -68,30 +71,28 @@ class Truck:
         self.target = final_target
         self.state = "moving"
 
+        # freeze + hold windows to avoid churn
+        self.route_freeze_steps = int(self.cfg.get("ROUTE_FREEZE_STEPS", 6))
+        if bin_id is not None:
+            self.assign_hold_steps = int(self.cfg.get("ASSIGN_HOLD_STEPS", 10))
+        if final_target is not None and bin_id is None:
+            self.go_depot_lock_steps = max(self.go_depot_lock_steps, int(self.cfg.get("DEPOT_LOCK_STEPS", 8)))
+
     def _move_along_route(self, dt: float) -> float:
-        """Follow route_pts[route_i:] along roads. Returns incremental € cost (energy+maint)."""
         if not self.route_pts or self.route_i >= len(self.route_pts):
             self.state = "idle"
             return 0.0
-
-        # current waypoint
         tgt = self.route_pts[self.route_i]
         c = self._move_towards(tgt, dt)
-
-        # if close enough, advance to next
         if dist(self.pos, tgt) < 0.5:
             self.route_i += 1
             if self.route_i >= len(self.route_pts):
-                self.state = "idle"  # arrived at final
+                self.state = "idle"
         else:
             self.state = "moving"
         return c
 
-    # ---------------------------------------------------------------------
-    # Physics + cost bookkeeping
-    # ---------------------------------------------------------------------
     def _move_towards(self, target: Point, dt: float) -> float:
-        """Move toward target. Returns incremental cost in euros (energy + maintenance)."""
         dx, dy = target[0] - self.pos[0], target[1] - self.pos[1]
         d = math.hypot(dx, dy)
         if d < 1e-6:
@@ -101,7 +102,6 @@ class Truck:
         ny = self.pos[1] + dy / d * step
         self.pos = (nx, ny)
 
-        # bookkeeping
         self.km_total += step / 1000.0
         e_used = step * self.cfg["ENERGY_PER_M"]
         self.energy -= e_used
@@ -115,36 +115,35 @@ class Truck:
         return energy_cost + maint_cost
 
     # ---------------------------------------------------------------------
-    # RL-friendly discrete action interface
+    # RL-friendly discrete action interface (unchanged)
     # ---------------------------------------------------------------------
     def apply_action(self, action: int, bins: List[BinObj], depot: Point, cfg: dict) -> float:
-        """
-        Discrete action step with automatic service + automatic movement when a route exists.
-        - Auto pickup when near assigned bin.
-        - Auto unload at depot.
-        - If carrying load and no target/route, only auto-route to depot when FULL or low energy.
-        - Movement proceeds every step if a route exists, unless action==WAIT (4).
-        """
         dt = cfg["DT"]
         reward = 0.0
 
-        # Wage tick for this truck
+        # counters tick (RL path)
+        if self.route_freeze_steps > 0: self.route_freeze_steps -= 1
+        if self.assign_hold_steps > 0:  self.assign_hold_steps  -= 1
+        if self.go_depot_lock_steps > 0: self.go_depot_lock_steps -= 1
+
         wage_cost = (cfg["WAGE_PER_HOUR"] / 3600.0) * dt
         self.costs_eur["wage"] += wage_cost
         reward -= wage_cost
 
         thr = cfg.get("APPROACH_RADIUS_M", 3.0)
 
-        # --- At depot: auto unload; recharge only on explicit action ---
         if dist(self.pos, depot) < 1.0:
             if self.load > 0:
+                dumped = self.load
                 self.load = 0
-                reward += 1.0  # unload shaping
+                reward += 0.03 * dumped
+                if self.stops_since_depot >= 2:
+                    reward += 0.3
+                self.stops_since_depot = 0
             if action == 3 and self.energy < cfg["ENERGY_MAX"]:
                 self.energy = cfg["ENERGY_MAX"]
-                reward += 0.5
+                reward += 0.1
 
-        # --- At assigned bin: auto pickup (cannot be blocked) ---
         if self.assigned_bin:
             b = next((bb for bb in bins if bb.id == self.assigned_bin), None)
             if b and dist(self.pos, b.pos) < thr and b.fill > 0 and self.load < cfg["TRUCK_CAPACITY"]:
@@ -152,34 +151,31 @@ class Truck:
                 if take > 0:
                     self.load += take
                     b.fill -= take
-                    reward += 0.1 * take
+                    reward += 0.02 * take
+                    self.stops_since_depot += 1
 
-            # Done with this bin?
             if b:
                 if self.load >= cfg["TRUCK_CAPACITY"]:
-                    # truck full -> head to depot
                     self.assigned_bin = None
                     self.target = depot
                     route = cfg.get("plan_route_fn")(self.pos, self.target) if "plan_route_fn" in cfg else [self.pos, self.target]
                     self.assign_target(route, None, self.target)
                 elif b.fill == 0:
-                    # bin empty but truck NOT full -> drop assignment; stay available for next auction
                     self.assigned_bin = None
                     self.target = None
                     self.route_pts = []
                     self.route_i = 0
 
-        # --- If carrying load but no plan, only auto plan to depot when FULL or low energy ---
         if (self.load > 0) and (not self.route_pts) and (self.target is None):
             must_recharge = not self._can_return_to_depot(depot)
-            if (self.load >= cfg["TRUCK_CAPACITY"]) or must_recharge:
+            near_full_frac = float(cfg.get("NEAR_FULL_FRAC", 0.9))
+            near_full = self.load >= near_full_frac * cfg["TRUCK_CAPACITY"]
+            if near_full or must_recharge or self.go_depot_lock_steps > 0:
                 self.target = depot
                 route = cfg.get("plan_route_fn")(self.pos, self.target) if "plan_route_fn" in cfg else [self.pos, self.target]
                 self.assign_target(route, None, self.target)
-            # else: remain idle for one tick so auction() can assign the next bin
 
-        # --- Automatic movement when a route exists (unless WAIT) ---
-        if action != 4:  # not WAIT
+        if action != 4:
             if self.route_pts:
                 c = self._move_along_route(dt)
                 reward -= c
@@ -191,11 +187,9 @@ class Truck:
         else:
             self.state = "idle"
 
-        # --- Out-of-energy penalty if stranded ---
         if self.energy <= 0 and dist(self.pos, depot) > 1.0:
             reward -= cfg.get("OUTAGE_PENALTY_EUR", 1000.0)
 
-        # --- Small shaping toward assigned bin (optional) ---
         if self.assigned_bin:
             b = next((bb for bb in bins if bb.id == self.assigned_bin), None)
             if b:
@@ -210,11 +204,18 @@ class Truck:
         """Perform one step in baseline sim. Returns events."""
         events = []
 
+        # >>> FIX: tick down anti-churn counters also in baseline <<<
+        if self.route_freeze_steps > 0: self.route_freeze_steps -= 1
+        if self.assign_hold_steps > 0:  self.assign_hold_steps  -= 1
+        if self.go_depot_lock_steps > 0: self.go_depot_lock_steps -= 1
+        # ---------------------------------------------------------------
+
         # depot logic
         if dist(self.pos, depot) < 1.0:
             if self.load > 0:
                 events.append({"type": "drop", "truck": self.tid, "amount": self.load})
                 self.load = 0
+                self.stops_since_depot = 0
             if self.energy < self.cfg["ENERGY_MAX"]:
                 self.energy = self.cfg["ENERGY_MAX"]
                 events.append({"type": "recharge", "truck": self.tid})
@@ -227,15 +228,14 @@ class Truck:
                 if take > 0:
                     self.load += take
                     b.fill -= take
+                    self.stops_since_depot += 1
                     events.append({"type": "pickup", "truck": self.tid, "bin": b.id, "amount": take})
 
                 if self.load >= self.cfg["TRUCK_CAPACITY"]:
-                    # full -> go depot
                     self.assigned_bin = None
                     route = plan_route(self.pos, depot)
                     self.assign_target(route, None, depot)
                 elif b.fill == 0:
-                    # bin emptied but truck not full -> release assignment; wait for next auction
                     self.assigned_bin = None
                     self.target = None
                     self.route_pts = []

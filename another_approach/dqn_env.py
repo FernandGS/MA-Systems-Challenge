@@ -40,14 +40,12 @@ class MultiTruckEnv:
         self.action_space = spaces.Discrete(5)
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(self.obs_dim,), dtype=np.float32)
 
-        # Reward-Skalierung (nur für RL, nicht für day_costs)
+        # Reward scaling (RL only)
         self.reward_scale = float(self.cfg.get("REWARD_SCALE", 0.01))
-        # Optionales Cap pro Tick gegen Penalty-Kaskaden (None = aus)
         self.max_penalties_per_tick = self.cfg.get("MAX_PENALTIES_PER_TICK", None)
 
     # ---------- logging helper ----------
     def _log_frame(self):
-        """Append one frame to sim.frames for visualization/export."""
         frame = {
             "t": self.sim.t,
             "trucks": [
@@ -66,7 +64,7 @@ class MultiTruckEnv:
                 {"id": b.id, "x": b.pos[0], "y": b.pos[1], "fill": b.fill, "cap": b.capacity}
                 for b in self.sim.bins
             ],
-            "events": [],  # per-step slice placeholder (global log ist in sim.events)
+            "events": [],
         }
         self.sim.frames.append(frame)
 
@@ -79,10 +77,6 @@ class MultiTruckEnv:
         return self._get_obs_all()
 
     def step(self, actions):
-        """
-        actions: list[int] of length n_agents
-        Returns: (obs_all, rewards_all, done_all, info)
-        """
         dt = self.cfg["DT"]
         rewards = [0.0] * self.n_agents
 
@@ -110,45 +104,43 @@ class MultiTruckEnv:
             carrying = truck.load > 0
             at_depot = dist(truck.pos, self.city.depot) < 1.0
 
-            # NEW: action 1 = RETURN_TO_DEPOT
+            # action 1 = RETURN_TO_DEPOT
             if a == 1 and not at_depot:
                 truck.assigned_bin = None
                 truck.target = self.city.depot
-                # sofort Route planen, falls nötig
                 if not has_route or not truck.route_pts:
                     route = self.city.plan_route(truck.pos, self.city.depot)
                     truck.assign_target(route, None, self.city.depot)
-                a = 0  # danach normal "MOVE"
+                a = 0  # MOVE afterwards
 
-            # Kein Plan/Route: MOVE bringt nichts -> als WAIT behandeln
+            # MOVE without plan does nothing -> WAIT
             if a == 0 and not has_route:
                 a = 4  # WAIT
 
-            # WAIT ist schädlich, wenn en-route/assigned/carrying -> zwingend MOVE
-            if a == 4 and (has_route or is_assigned or carrying):
+            # WAIT is blocked if any commitment exists OR route is frozen
+            if a == 4 and (has_route or is_assigned or carrying or truck.route_freeze_steps > 0):
                 a = 0  # MOVE
 
-            # RECHARGE nur am Depot, sonst weiterfahren
+            # RECHARGE only at depot
             if a == 3 and not at_depot:
                 a = 0  # MOVE
 
             masked_actions.append(a)
 
-        # 4) apply actions; Reward skalieren
+        # 4) apply actions; scale reward
         for idx, truck in enumerate(self.sim.trucks):
             r = truck.apply_action(masked_actions[idx], self.sim.bins, self.city.depot, self.cfg)
 
-            # kleine Strafnase für intention zu WAIT in ungeeigneten Zuständen
+            # small penalty for intending WAIT when it wasn't allowed (only if there was a commitment)
             a_raw = raw_actions[idx]
             if a_raw == 4:
                 has_route = bool(truck.route_pts) or (truck.target is not None)
                 if has_route or (truck.assigned_bin is not None) or (truck.load > 0):
                     r -= 1.0
 
-            # zentrale Reward-Skalierung
             rewards[idx] += r * self.reward_scale
 
-        # 5) Overflow-Penalties (für RL skaliert, für Ökonomie voll)
+        # 5) Overflow penalties (team economy unchanged)
         if overflowed_ids:
             if isinstance(self.max_penalties_per_tick, int) and len(overflowed_ids) > self.max_penalties_per_tick:
                 overflowed_ids = overflowed_ids[: self.max_penalties_per_tick]
@@ -172,17 +164,16 @@ class MultiTruckEnv:
                     )
                     rewards[i_star] -= pen_scaled
 
-                # Ökonomik unverändert in €
                 self.sim.day_costs["penalties_eur"] += pen_eur
 
-        # 6) wage aggregation (per-truck wage wurde bereits im truck.apply_action vom Reward abgezogen)
+        # 6) wage aggregation (per-truck wage already in apply_action)
         self.sim._wage_tick()
 
         # 7) rolling energy/maintenance aggregation
         self.sim.day_costs["energy_eur"] = sum(t.costs_eur["energy"] for t in self.sim.trucks)
         self.sim.day_costs["maintenance_eur"] = sum(t.costs_eur["maint"] for t in self.sim.trucks)
 
-        # 8) log frame + Zeit fortschreiben
+        # 8) log frame + advance
         self._log_frame()
         self.sim.t += dt
         self.current_step += 1
@@ -195,7 +186,6 @@ class MultiTruckEnv:
 
     # ---------- observation builder ----------
     def _norm_d(self, x1, y1, x2, y2):
-        """Distance normalized by map width/height, clipped to [0,1] to match Box."""
         w, h = self.cfg["MAP_SIZE"]
         dx = (x2 - x1) / max(1e-9, w)
         dy = (y2 - y1) / max(1e-9, h)
@@ -211,7 +201,6 @@ class MultiTruckEnv:
         load = truck.load / self.cfg["TRUCK_CAPACITY"]
         energy = truck.energy / self.cfg["ENERGY_MAX"]
 
-        # assigned bin features
         assigned_d, assigned_fill = 0.0, 0.0
         if truck.assigned_bin:
             b = next((bb for bb in self.sim.bins if bb.id == truck.assigned_bin), None)
@@ -219,7 +208,6 @@ class MultiTruckEnv:
                 assigned_d = self._norm_d(x, y, b.pos[0], b.pos[1])
                 assigned_fill = b.fill / b.capacity
 
-        # nearest 3 bins (distance, fill)
         bins = sorted(self.sim.bins, key=lambda bb: math.hypot(bb.pos[0] - x, bb.pos[1] - y))[:3]
         b_feats = []
         for b in bins:
@@ -229,16 +217,7 @@ class MultiTruckEnv:
         while len(b_feats) < 6:
             b_feats.append(0.0)
 
-        # normalized truck ID (for symmetry breaking in shared policy)
         truck_id_norm = idx / max(1, self.n_agents - 1) if self.n_agents > 1 else 0.0
 
-        base = [
-            x / w,
-            y / h,
-            load,
-            energy,
-            assigned_d,
-            assigned_fill,
-        ] + b_feats
-
+        base = [x / w, y / h, load, energy, assigned_d, assigned_fill] + b_feats
         return np.array(base + [truck_id_norm], dtype=np.float32)

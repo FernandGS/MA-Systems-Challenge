@@ -31,8 +31,13 @@ def auction(bins: List[BinObj], trucks: List[Truck], now: float, cfg: dict, plan
     horizon = cfg.get("URGENCY_HORIZON_S", 100)
     thr = cfg.get("OPPORTUNISTIC_FILL_FRAC", 0.60)
 
-    # trucks that are truly idle
-    idle = [t for t in trucks if not t.assigned_bin and not (t.route_pts and t.route_i < len(t.route_pts))]
+    # trucks that are truly idle (also not within assignment hold window)
+    idle = [
+        t for t in trucks
+        if not t.assigned_bin
+        and not (t.route_pts and t.route_i < len(t.route_pts))
+        and t.assign_hold_steps == 0
+    ]
     if not idle:
         return
 
@@ -75,7 +80,7 @@ def auction(bins: List[BinObj], trucks: List[Truck], now: float, cfg: dict, plan
             assigned_bins.add(best_b.id)
             free_trucks.remove(best_t)
             remaining_bins = [b for b in remaining_bins if b.id != best_b.id]
-        return free_trucks  # <— just return the list (no set ops)
+        return free_trucks
 
     # 1) match urgent/full bins
     idle = greedy_match(urgent_bins, idle)
