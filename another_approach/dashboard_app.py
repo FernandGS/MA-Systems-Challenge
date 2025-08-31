@@ -5,14 +5,12 @@ import streamlit as st
 from config import CONFIG
 from city import City
 from sim import Simulation
-from dashboard import render_dashboard_page
+from dashboard import show_dashboard  # <- use the correct function
 from visualize import preview  # optional for local debug (won't render inside Streamlit)
 
-# Optional DQN imports (we’ll guard usage)
-try:
-    from dqn_train_multi import train_multi
-except Exception:
-    train_multi = None
+# RL bits (shared policy)
+from dqn_train import train_multi
+from dqn_env import MultiTruckEnv
 
 st.set_page_config(page_title="Trash RL KPI", layout="wide")
 
@@ -35,10 +33,27 @@ cfg["WAGE_PER_HOUR"] = st.sidebar.number_input("Wage €/h", value=cfg["WAGE_PER
 cfg["OVERFLOW_PENALTY_EUR"] = st.sidebar.number_input("Overflow penalty €", value=cfg["OVERFLOW_PENALTY_EUR"], min_value=0.0, step=10.0)
 cfg["ENERGY_EUR_PER_UNIT"] = st.sidebar.number_input("Energy cost per unit €", value=cfg["ENERGY_EUR_PER_UNIT"], min_value=0.0, step=0.01, format="%.2f")
 
-# Wire the road planner into RL config if used
-cfg["plan_route_fn"] = None  # placeholder; Simulation/City will pass the function directly
+# Wire the road planner into RL config if used (Simulation/City will provide)
+cfg["plan_route_fn"] = None
 
 st.title("🚛 Trash Collection — KPI Dashboard")
+
+def _rollout_greedy_with_shared_agent(_cfg, agent):
+    """Run one greedy episode using the already-trained shared policy and return (sim, costs)."""
+    env = MultiTruckEnv(_cfg)
+    agent.eps = 0.0  # greedy
+    obs_all = env.reset()
+    done = [False] * env.n_agents
+    last_info = {}
+
+    while not all(done):
+        actions = [agent.act_eval(obs_all[i]) for i in range(env.n_agents)]
+        obs_all, _rewards, done, info = env.step(actions)
+        last_info = info
+
+    sim = env.sim
+    costs = last_info.get("costs", {})
+    return sim, costs
 
 if mode == "Baseline":
     if st.button("Run Simulation"):
@@ -47,30 +62,25 @@ if mode == "Baseline":
         sim = Simulation(cfg, city)
         sim.run(cfg["STEPS_PER_DAY"])
         costs = sim.summary_costs()
-        render_dashboard_page(sim, costs)
+        show_dashboard(sim, costs)
     else:
         st.info("Adjust parameters in the sidebar, then click **Run Simulation**.")
 
-else:  # Train DQN (short)
-    if train_multi is None:
-        st.error("DQN training code not available (could not import dqn_train_multi).")
-    else:
-        episodes = st.sidebar.slider("Episodes", 5, 200, 30, 5)
-        st.caption("Training maximizes reward (≈ minimizes cost). After training, we show a baseline rollout.")
-        if st.button("Train & Evaluate"):
-            with st.spinner("Training agents..."):
-                agents, rewards_hist = train_multi(cfg, episodes=episodes, verbose=False)
-            st.success("Training complete.")
+else:  # Train DQN (short) with shared policy, then evaluate that policy
+    episodes = st.sidebar.slider("Episodes", 5, 200, 30, 5)
+    st.caption("Training maximizes reward (≈ minimizes cost). After training, we evaluate the learned policy (greedy).")
+    if st.button("Train & Evaluate"):
+        with st.spinner("Training shared policy..."):
+            agents, rewards_hist, paths = train_multi(cfg, episodes=episodes, verbose=False)
+            # shared policy => agents is [agent]
+            agent = agents[0]
+        st.success(f"Training complete. {'Saved model at ' + paths[0] if paths else 'No checkpoint saved.'}")
 
-            # Evaluate via a baseline rollout so we get events & costs
-            city = City(cfg)
-            cfg["plan_route_fn"] = city.plan_route
-            sim = Simulation(cfg, city)
-            sim.run(cfg["STEPS_PER_DAY"])
-            costs = sim.summary_costs()
-            render_dashboard_page(sim, costs, rewards_hist=rewards_hist)
-        else:
-            st.info("Pick a small number of episodes (e.g., 30–50) to get a feel for learning curves.")
+        # Evaluate the trained policy (greedy) to generate sim/costs/events
+        sim, costs = _rollout_greedy_with_shared_agent(cfg, agent)
+        show_dashboard(sim, costs, rewards_hist=rewards_hist)
+    else:
+        st.info("Pick a small number of episodes (e.g., 30–50) to get a feel for learning curves.")
 
 st.divider()
 # Optional: Load a previously exported JSON (from sim.export_json) and visualize
@@ -96,5 +106,6 @@ if upload is not None:
     events = data.get("events", [])
     st.write(f"Events loaded: {len(events)}")
     if events:
+        import pandas as pd
         df_events = pd.DataFrame(events)
         st.dataframe(df_events.head(200))

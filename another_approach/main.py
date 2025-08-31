@@ -7,13 +7,8 @@ from config import CONFIG
 from city import City
 from sim import Simulation
 from visualize import preview
+from dqn_train import train_multi
 from eval_dqn import load_agents, rollout_greedy
-
-# Optional DQN imports
-try:
-    from dqn_train_multi import train_multi
-except ImportError:
-    train_multi = None
 
 
 def run_baseline(cfg):
@@ -32,7 +27,7 @@ def main():
         "--model_paths",
         nargs="*",
         default=None,
-        help="Paths to per-truck .pt files for --mode eval (order: truck0, truck1, ...)",
+        help="For shared policy eval, provide a single .pt path.",
     )
     args = parser.parse_args()
 
@@ -46,29 +41,22 @@ def main():
 
     elif args.mode == "dqn":
         if train_multi is None:
-            print("DQN not available. Please check dqn_train_multi.py")
-            return
-        # train_multi in deiner Version gibt (agents, rewards_hist, paths) zurück
+            raise RuntimeError("train_multi could not be imported.")
         agents, rewards_hist, paths = train_multi(cfg, episodes=args.episodes, verbose=True)
-        print("Training complete. Saved model paths:", paths)
-
-        # Danach nur eine schnelle Baseline-Runde für eine animierte Vorschau + Kosten
-        sim, costs = run_baseline(cfg)
-        preview(sim)
-        print("Summary costs:", costs)
-        # Hinweis: Für interaktive KPIs -> streamlit run dashboard_app.py
+        print("Saved model:", paths[0] if paths else "(not saved)")
 
     elif args.mode == "eval":
-        if not args.model_paths or len(args.model_paths) < cfg["N_TRUCKS"]:
-            print(f"Provide --model_paths for at least {cfg['N_TRUCKS']} trucks.")
+        if not args.model_paths:
+            print("Provide --model_paths path/to/dqn_shared_xxx.pt")
             return
-        env, agents = load_agents(cfg, args.model_paths[:cfg["N_TRUCKS"]])
-        avg_r, sim, info = rollout_greedy(env, agents)
+        env, agent = load_agents(cfg, args.model_paths[0])
+        avg_r, sim_rl, info = rollout_greedy(env, agent)
         print(f"Eval average reward: {avg_r:.3f}")
-        costs = info.get("costs", {})
-        print("Costs:", costs)
-        preview(sim)
-        sim.export_json(cfg["JSON_EXPORT_PATH"])
+        print("Costs:", info.get("costs", {}))
+
+        # visualize & export the RL run you just evaluated:
+        preview(sim_rl)
+        sim_rl.export_json(cfg["JSON_EXPORT_PATH"])
 
     else:
         raise ValueError(f"unknown mode: {args.mode}")

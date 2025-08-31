@@ -131,14 +131,30 @@ class Simulation:
         total = sum(self.day_costs.values())
         return {**self.day_costs, "total_eur": total}
 
-    def export_json(self, path:str):
+    def export_json(self, path: str):
         """Export replay (frames + events + costs) for Unity or dashboards."""
+        def json_safe(obj):
+            # Basic sanitizer: remove callables and replace unknowns with string repr
+            if isinstance(obj, dict):
+                out = {}
+                for k, v in obj.items():
+                    if callable(v):
+                        continue  # drop functions/methods like plan_route_fn
+                    try:
+                        json.dumps(v)
+                        out[k] = v
+                    except TypeError:
+                        out[k] = str(v)
+                return out
+            return obj
+
         out = {
             "frames": self.frames,
             "events": self.events,
             "costs": self.summary_costs(),
-            "cfg": self.cfg,
+            "cfg": json_safe(self.cfg),
         }
-        with open(path,"w") as f:
-            json.dump(out,f,indent=2)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
         print(f"✅ Exported simulation JSON to {path}")
+

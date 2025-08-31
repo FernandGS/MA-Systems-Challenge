@@ -11,7 +11,7 @@ CONFIG = {
 
     # ---------- world ----------
     "MAP_SIZE": (220.0, 160.0),
-    "SEED": 12,
+    "SEED": 42,
     "WAYPOINTS": [
         (20,130),(60,130),(100,130),(160,120),
         (30,85),(95,125),(150,75),
@@ -34,7 +34,7 @@ CONFIG = {
     "SERVICE_TIME_S": 25.0,
 
     # ---------- trucks ----------
-    "N_TRUCKS": 5,
+    "N_TRUCKS": 6,
     "TRUCK_CAPACITY": 100,
     "TRUCK_SPEED_MPS": 6.0,
     "TRUCK_ACC_MPS2": 2.5,
@@ -62,13 +62,13 @@ CONFIG = {
     # ---------- RL ----------
     "DT": 1.0,
     "STEPS_PER_DAY": 600,
-    "GAMMA": 0.95,
-    "LR": 1e-3,
+    "GAMMA": 0.9211681425227147,
+    "LR": 2.250856184327001e-05,
     "EPS_START": 1.0,
-    "EPS_END": 0.05,
-    "EPS_DECAY": 0.995,
+    "EPS_END": 0.04264434963566859,
+    "EPS_DECAY": 0.9944724995499197,
     "BUFFER_SIZE": 50000,
-    "BATCH_SIZE": 64,
+    "BATCH_SIZE": 128,
     "TARGET_UPDATE": 100,
 
     # ---------- export ----------
