@@ -34,7 +34,7 @@ CONFIG = {
     "SERVICE_TIME_S": 25.0,
 
     # ---------- trucks ----------
-    "N_TRUCKS": 6,
+    "N_TRUCKS": 4,
     "TRUCK_CAPACITY": 100,
     "TRUCK_SPEED_MPS": 6.0,
     "TRUCK_ACC_MPS2": 2.5,
@@ -62,13 +62,13 @@ CONFIG = {
     # ---------- RL ----------
     "DT": 1.0,
     "STEPS_PER_DAY": 600,
-    "GAMMA": 0.9211681425227147,
-    "LR": 2.250856184327001e-05,
+    "GAMMA": 0.9266691575152085,
+    "LR": 0.00505982903772765,
     "EPS_START": 1.0,
-    "EPS_END": 0.04264434963566859,
-    "EPS_DECAY": 0.9944724995499197,
+    "EPS_END": 0.08485580666713127,
+    "EPS_DECAY": 0.998863940629782,
     "BUFFER_SIZE": 50000,
-    "BATCH_SIZE": 128,
+    "BATCH_SIZE": 32,
     "TARGET_UPDATE": 100,
 
     # ---------- export ----------

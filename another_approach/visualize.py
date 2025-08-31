@@ -84,5 +84,5 @@ def preview(sim):
 
         return trucks_scatter, bin_scatter
 
-    ani = FuncAnimation(fig, update, frames=len(sim.frames), interval=30, blit=False, repeat=False)
+    ani = FuncAnimation(fig, update, frames=len(sim.frames), interval=100, blit=False, repeat=False)
     plt.show()
