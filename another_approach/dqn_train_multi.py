@@ -1,3 +1,4 @@
+import os, time, torch
 from tqdm import trange
 from dqn_env_multi import MultiTruckEnv
 from dqn_agent_multi import DQNAgent
@@ -28,4 +29,11 @@ def train_multi(cfg, episodes=200, verbose=True):
         if verbose:
             print(f"Ep {ep} avg reward={avg_reward:.2f} eps={agents[0].eps:.2f}")
 
-    return agents, rewards_hist
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+    os.makedirs("models", exist_ok=True)
+    paths = []
+    for i, ag in enumerate(agents):
+        p = f"models/dqn_truck{i}_{stamp}.pt"
+        torch.save(ag.q_net.state_dict(), p)
+        paths.append(p)
+    return agents, rewards_hist, paths
