@@ -35,7 +35,7 @@ CONFIG = {
 
     # ---------- trucks ----------
     "N_TRUCKS": 4,
-    "TRUCK_CAPACITY": 100,
+    "TRUCK_CAPACITY": 300,
     "TRUCK_SPEED_MPS": 6.0,
     "TRUCK_ACC_MPS2": 2.5,
     "TRUCK_DEC_MPS2": 4.0,
@@ -59,6 +59,7 @@ CONFIG = {
     # Collect bins already above this fill fraction even if not yet urgent.
     "OPPORTUNISTIC_FILL_FRAC": 0.60,
 
+
     # ---------- RL ----------
     "DT": 1.0,
     "STEPS_PER_DAY": 600,
@@ -70,6 +71,8 @@ CONFIG = {
     "BUFFER_SIZE": 50000,
     "BATCH_SIZE": 128,
     "TARGET_UPDATE": 100,
+    "REWARD_SCALE": 0.01,
+    "MAX_PENALTIES_PER_TICK": 8,
 
     # ---------- export ----------
     "JSON_EXPORT_PATH": "sim_day.json"

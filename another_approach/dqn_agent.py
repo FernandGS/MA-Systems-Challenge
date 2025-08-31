@@ -6,7 +6,9 @@ from collections import deque
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
+import torch.nn.utils as nn_utils
 
 
 class QNetwork(nn.Module):
@@ -52,8 +54,8 @@ class DQNAgent:
         s = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             q = self.q_net(s)
-        return int(q.argmax(dim=1).item())#
-    
+        return int(q.argmax(dim=1).item())
+
     def act_eval(self, state):
         s = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
@@ -84,10 +86,12 @@ class DQNAgent:
             q2 = self.target_net(s2).max(dim=1, keepdim=True)[0]
             target = r + (1.0 - d) * self.gamma * q2
 
-        loss = (q - target).pow(2).mean()
+        # Stabiler: Huber-Loss + Grad-Clip
+        loss = F.smooth_l1_loss(q, target)
 
         self.optimizer.zero_grad()
         loss.backward()
+        nn_utils.clip_grad_norm_(self.q_net.parameters(), max_norm=10.0)
         self.optimizer.step()
 
         # Soft target update

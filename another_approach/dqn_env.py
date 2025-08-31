@@ -16,11 +16,12 @@ class MultiTruckEnv:
       - Auto movement along preplanned routes unless the agent chooses WAIT
       - Recharge only at depot
       - Reward ≈ -(wage + energy + maintenance + penalties) + small service bonuses
+
     Actions (Discrete(5)):
       0: MOVE/CONTINUE (default; if no route/target -> treated as WAIT)
-      1: (unused, behaves like MOVE)
+      1: RETURN_TO_DEPOT (plan route to depot, then move)
       2: (unused, behaves like MOVE)
-      3: RECHARGE (only at depot, otherwise treated as MOVE)
+      3: RECHARGE (only at depot, otherwise behaves like MOVE)
       4: WAIT
     """
 
@@ -37,8 +38,12 @@ class MultiTruckEnv:
         # obs = truck(x,y,load,energy) + assigned (dist,fill) + nearest 3 bins (d,fill)*3 + truck_id
         self.obs_dim = (4 + 2 + 3 * 2) + 1
         self.action_space = spaces.Discrete(5)
-        # we clip distances to [0,1] so this Box is accurate
         self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(self.obs_dim,), dtype=np.float32)
+
+        # Reward-Skalierung (nur für RL, nicht für day_costs)
+        self.reward_scale = float(self.cfg.get("REWARD_SCALE", 0.01))
+        # Optionales Cap pro Tick gegen Penalty-Kaskaden (None = aus)
+        self.max_penalties_per_tick = self.cfg.get("MAX_PENALTIES_PER_TICK", None)
 
     # ---------- logging helper ----------
     def _log_frame(self):
@@ -61,7 +66,7 @@ class MultiTruckEnv:
                 {"id": b.id, "x": b.pos[0], "y": b.pos[1], "fill": b.fill, "cap": b.capacity}
                 for b in self.sim.bins
             ],
-            "events": [],  # sim.events holds global event log; this is just a per-step slice placeholder
+            "events": [],  # per-step slice placeholder (global log ist in sim.events)
         }
         self.sim.frames.append(frame)
 
@@ -70,7 +75,7 @@ class MultiTruckEnv:
         self.cfg["plan_route_fn"] = self.city.plan_route
         self.sim = Simulation(self.cfg, self.city)
         self.current_step = 0
-        self._log_frame()  # initial frame for preview
+        self._log_frame()
         return self._get_obs_all()
 
     def step(self, actions):
@@ -91,11 +96,11 @@ class MultiTruckEnv:
                 overflowed_ids.append(b.id)
                 self.sim.events.append({"t": self.sim.t, "type": "overflow", "bin": b.id})
 
-        # 2) auction assignment (assigns only unclaimed bins; urgent first)
+        # 2) auction assignment
         auction(self.sim.bins, self.sim.trucks, self.sim.t, self.cfg, self.city.plan_route)
 
-        # 3) safety mask on actions (prevent harmful WAIT/recharge misuse)
-        raw_actions = list(actions)  # keep for intent-based shaping
+        # 3) action safety mask + RETURN_TO_DEPOT
+        raw_actions = list(actions)
         masked_actions = []
         for idx, truck in enumerate(self.sim.trucks):
             a = raw_actions[idx]
@@ -105,41 +110,57 @@ class MultiTruckEnv:
             carrying = truck.load > 0
             at_depot = dist(truck.pos, self.city.depot) < 1.0
 
-            # If there's no plan/route, MOVE can't advance -> treat as WAIT
+            # NEW: action 1 = RETURN_TO_DEPOT
+            if a == 1 and not at_depot:
+                truck.assigned_bin = None
+                truck.target = self.city.depot
+                # sofort Route planen, falls nötig
+                if not has_route or not truck.route_pts:
+                    route = self.city.plan_route(truck.pos, self.city.depot)
+                    truck.assign_target(route, None, self.city.depot)
+                a = 0  # danach normal "MOVE"
+
+            # Kein Plan/Route: MOVE bringt nichts -> als WAIT behandeln
             if a == 0 and not has_route:
                 a = 4  # WAIT
 
-            # WAIT while en-route/assigned/carrying is harmful -> force MOVE
+            # WAIT ist schädlich, wenn en-route/assigned/carrying -> zwingend MOVE
             if a == 4 and (has_route or is_assigned or carrying):
                 a = 0  # MOVE
 
-            # Recharge only at depot; elsewhere continue moving
+            # RECHARGE nur am Depot, sonst weiterfahren
             if a == 3 and not at_depot:
                 a = 0  # MOVE
 
             masked_actions.append(a)
 
-        # 4) apply actions (movement, pickup/unload, energy/maint costs, wage in reward)
+        # 4) apply actions; Reward skalieren
         for idx, truck in enumerate(self.sim.trucks):
             r = truck.apply_action(masked_actions[idx], self.sim.bins, self.city.depot, self.cfg)
 
-            # soft penalty for the *intent* to wait in states where it should move (masked already)
+            # kleine Strafnase für intention zu WAIT in ungeeigneten Zuständen
             a_raw = raw_actions[idx]
             if a_raw == 4:
                 has_route = bool(truck.route_pts) or (truck.target is not None)
                 if has_route or (truck.assigned_bin is not None) or (truck.load > 0):
-                    r -= 1.0  # small nudge; main deterrent is overflow penalty
+                    r -= 1.0
 
-            rewards[idx] += r
+            # zentrale Reward-Skalierung
+            rewards[idx] += r * self.reward_scale
 
-        # 5) overflow penalties to responsible/nearest (from the fills at the start of this tick)
+        # 5) Overflow-Penalties (für RL skaliert, für Ökonomie voll)
         if overflowed_ids:
-            pen = self.cfg["OVERFLOW_PENALTY_EUR"]
+            if isinstance(self.max_penalties_per_tick, int) and len(overflowed_ids) > self.max_penalties_per_tick:
+                overflowed_ids = overflowed_ids[: self.max_penalties_per_tick]
+
+            pen_eur = float(self.cfg["OVERFLOW_PENALTY_EUR"])
+            pen_scaled = pen_eur * self.reward_scale
+
             for bid in overflowed_ids:
                 owners = [i for i, t in enumerate(self.sim.trucks) if t.assigned_bin == bid]
                 if owners:
                     for i in owners:
-                        rewards[i] -= pen
+                        rewards[i] -= pen_scaled
                 else:
                     bpos = next(b.pos for b in self.sim.bins if b.id == bid)
                     i_star = min(
@@ -149,17 +170,19 @@ class MultiTruckEnv:
                             self.sim.trucks[i].pos[1] - bpos[1],
                         ),
                     )
-                    rewards[i_star] -= pen
-                self.sim.day_costs["penalties_eur"] += pen
+                    rewards[i_star] -= pen_scaled
 
-        # 6) wage cost to day-costs (per-truck wage already subtracted from reward in apply_action)
+                # Ökonomik unverändert in €
+                self.sim.day_costs["penalties_eur"] += pen_eur
+
+        # 6) wage aggregation (per-truck wage wurde bereits im truck.apply_action vom Reward abgezogen)
         self.sim._wage_tick()
 
         # 7) rolling energy/maintenance aggregation
         self.sim.day_costs["energy_eur"] = sum(t.costs_eur["energy"] for t in self.sim.trucks)
         self.sim.day_costs["maintenance_eur"] = sum(t.costs_eur["maint"] for t in self.sim.trucks)
 
-        # 8) log frame and advance time
+        # 8) log frame + Zeit fortschreiben
         self._log_frame()
         self.sim.t += dt
         self.current_step += 1

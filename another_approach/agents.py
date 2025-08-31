@@ -51,6 +51,7 @@ class Truck:
     # Utilities
     # ---------------------------------------------------------------------
     def _can_return_to_depot(self, depot: Point) -> bool:
+        """Check if current energy allows getting back to depot with reserve."""
         meters_left = self.energy / max(1e-9, self.cfg["ENERGY_PER_M"])
         return meters_left >= (dist(self.pos, depot) + self.cfg["ENERGY_RESERVE_M"])
 
@@ -121,7 +122,7 @@ class Truck:
         Discrete action step with automatic service + automatic movement when a route exists.
         - Auto pickup when near assigned bin.
         - Auto unload at depot.
-        - If carrying load and no target/route, auto-route to depot.
+        - If carrying load and no target/route, only auto-route to depot when FULL or low energy.
         - Movement proceeds every step if a route exists, unless action==WAIT (4).
         """
         dt = cfg["DT"]
@@ -153,21 +154,31 @@ class Truck:
                     b.fill -= take
                     reward += 0.1 * take
 
-            # Done with this bin? (empty bin or truck full) -> head to depot
-            if b and (b.fill == 0 or self.load >= cfg["TRUCK_CAPACITY"]):
-                self.assigned_bin = None
+            # Done with this bin?
+            if b:
+                if self.load >= cfg["TRUCK_CAPACITY"]:
+                    # truck full -> head to depot
+                    self.assigned_bin = None
+                    self.target = depot
+                    route = cfg.get("plan_route_fn")(self.pos, self.target) if "plan_route_fn" in cfg else [self.pos, self.target]
+                    self.assign_target(route, None, self.target)
+                elif b.fill == 0:
+                    # bin empty but truck NOT full -> drop assignment; stay available for next auction
+                    self.assigned_bin = None
+                    self.target = None
+                    self.route_pts = []
+                    self.route_i = 0
+
+        # --- If carrying load but no plan, only auto plan to depot when FULL or low energy ---
+        if (self.load > 0) and (not self.route_pts) and (self.target is None):
+            must_recharge = not self._can_return_to_depot(depot)
+            if (self.load >= cfg["TRUCK_CAPACITY"]) or must_recharge:
                 self.target = depot
                 route = cfg.get("plan_route_fn")(self.pos, self.target) if "plan_route_fn" in cfg else [self.pos, self.target]
                 self.assign_target(route, None, self.target)
-
-        # --- If carrying load but no plan, auto plan to depot ---
-        if self.load > 0 and not self.route_pts and self.target is None:
-            self.target = depot
-            route = cfg.get("plan_route_fn")(self.pos, self.target) if "plan_route_fn" in cfg else [self.pos, self.target]
-            self.assign_target(route, None, self.target)
+            # else: remain idle for one tick so auction() can assign the next bin
 
         # --- Automatic movement when a route exists (unless WAIT) ---
-        # This is the key fix so trucks actually leave the depot / continue along routes.
         if action != 4:  # not WAIT
             if self.route_pts:
                 c = self._move_along_route(dt)
@@ -191,8 +202,6 @@ class Truck:
                 reward += 0.001 * max(0.0, 1.0 - dist(self.pos, b.pos) / 200.0)
 
         return reward
-
-
 
     # ---------------------------------------------------------------------
     # Baseline step (negotiation + simple sim)
@@ -219,10 +228,18 @@ class Truck:
                     self.load += take
                     b.fill -= take
                     events.append({"type": "pickup", "truck": self.tid, "bin": b.id, "amount": take})
-                if self.load >= self.cfg["TRUCK_CAPACITY"] or b.fill == 0:
+
+                if self.load >= self.cfg["TRUCK_CAPACITY"]:
+                    # full -> go depot
                     self.assigned_bin = None
                     route = plan_route(self.pos, depot)
                     self.assign_target(route, None, depot)
+                elif b.fill == 0:
+                    # bin emptied but truck not full -> release assignment; wait for next auction
+                    self.assigned_bin = None
+                    self.target = None
+                    self.route_pts = []
+                    self.route_i = 0
                 return events
 
         # motion toward target (only if target exists)
