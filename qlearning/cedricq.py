@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 import matplotlib.lines as mlines
 from collections import deque
-from math import inf
 import numpy as np
 
 # ==============================================================
