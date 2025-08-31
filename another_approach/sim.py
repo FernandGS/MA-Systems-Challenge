@@ -15,7 +15,7 @@ class Simulation:
 
         # --- Bins ---
         self.bins: List[BinObj] = [
-            BinObj(b["id"], b["pos"], b["capacity"], b["fill"]) for b in city.bins
+            BinObj(b["id"], b["pos"], b["capacity"], b["fill"], b.get("curb")) for b in city.bins
         ]
 
         # --- Trucks ---

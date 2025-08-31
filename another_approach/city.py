@@ -49,7 +49,7 @@ class City:
             nx,ny = -(y2-y1)/L,(x2-x1)/L
             side = -1 if self.rnd.random()<0.5 else 1
             pos = (cx+side*self.sidewalk_offset*nx, cy+side*self.sidewalk_offset*ny)
-            bins.append({"id": f"b{i}", "pos": pos, "capacity": cap, "fill": self.rnd.randint(0,cap//2)})
+            bins.append({"id": f"b{i}", "pos": pos, "curb": (cx, cy), "capacity": cap, "fill": self.rnd.randint(0,cap//2)})
         return bins
 
     def road_graph(self):
@@ -73,15 +73,20 @@ class City:
         return best_i
 
     def _dijkstra(self, start_idx: int, goal_idx: int):
-        """Dijkstra on waypoint graph; returns list of waypoint indices."""
+        """Dijkstra on waypoint graph; returns list of waypoint indices or None if unreachable."""
         adj, _coords = self.road_graph()
         import heapq
         dist = {i: float("inf") for i in adj}
         prev = {i: None for i in adj}
         dist[start_idx] = 0.0
         pq = [(0.0, start_idx)]
+        seen = set()
+
         while pq:
             d, u = heapq.heappop(pq)
+            if u in seen:
+                continue
+            seen.add(u)
             if u == goal_idx:
                 break
             if d > dist[u]:
@@ -92,63 +97,54 @@ class City:
                     dist[v] = nd
                     prev[v] = u
                     heapq.heappush(pq, (nd, v))
+
+        if prev[goal_idx] is None and goal_idx != start_idx:
+            return None  # <- no straight-line fallback
+
         # reconstruct
         path = []
         u = goal_idx
-        if prev[u] is None and u != start_idx:
-            return [start_idx, goal_idx]  # disconnected fallback
         while u is not None:
             path.append(u)
             u = prev[u]
         path.reverse()
         return path
 
-    def _closest_point_on_segment(self, p, a, b):
-        ax, ay = a; bx, by = b; px, py = p
-        vx, vy = bx-ax, by-ay
-        wx, wy = px-ax, py-ay
-        vv = vx*vx + vy*vy
-        if vv <= 1e-9:
-            return a, 0.0
-        t = max(0.0, min(1.0, (wx*vx + wy*vy)/vv))
-        cx, cy = ax + t*vx, ay + t*vy
-        return (cx, cy), t
-
-    def snap_to_road(self, p: Point) -> Point:
-        """Return the closest point to p on any road polyline (curb point)."""
-        best_pt, best_d2 = None, float("inf")
-        for r in self.roads:
-            a = self.waypoints[r.a_idx]; b = self.waypoints[r.b_idx]
-            c, _t = self._closest_point_on_segment(p, a, b)
-            dx, dy = p[0]-c[0], p[1]-c[1]
-            d2 = dx*dx + dy*dy
-            if d2 < best_d2:
-                best_d2 = d2
-                best_pt = c
-        return best_pt
-
     def plan_route(self, start: Point, goal: Point) -> list[Point]:
-        """
-        Route along roads by snapping start/goal to nearest road points,
-        then add a tiny final hop to the off-road goal (e.g., sidewalk bin).
-        """
-        s_snap = self.snap_to_road(start)
-        g_snap = self.snap_to_road(goal)
+        """Build a polyline route entirely along the road graph (no cross-block fallbacks)."""
+        # If you kept the curb logic, use curb points here; else leave as is.
+        si = self.nearest_waypoint_idx(start)
+        gi = self.nearest_waypoint_idx(goal)
 
-        si = self.nearest_waypoint_idx(s_snap)
-        gi = self.nearest_waypoint_idx(g_snap)
         idx_path = self._dijkstra(si, gi)
+        if idx_path is None:
+            # pick the nearest waypoint to 'goal' that IS reachable from 'start'
+            adj, _ = self.road_graph()
+            # simple reachability via BFS from start
+            from collections import deque
+            q, vis = deque([si]), {si}
+            while q:
+                u = q.popleft()
+                for v, _w in adj[u]:
+                    if v not in vis:
+                        vis.add(v); q.append(v)
+            # choose the closest reachable waypoint to goal
+            reachable = list(vis)
+            gx, gy = self.waypoints[gi]
+            def wpt(i): return self.waypoints[i]
+            def L2(i): 
+                x, y = wpt(i); return (x - gx)**2 + (y - gy)**2
+            if not reachable:
+                raise RuntimeError("Road graph has no reachable nodes from start.")
+            gi2 = min(reachable, key=L2)
+            idx_path = self._dijkstra(si, gi2)
+            if idx_path is None:
+                raise RuntimeError("No path found even to nearest reachable waypoint.")
 
-        route = []
-        route.append(start if start == s_snap else s_snap)
+        route = [start]
         route += [self.waypoints[i] for i in idx_path]
-        route.append(g_snap)
-
-        # final short hop to actual goal (sidewalk offset is small)
-        if (goal[0]-g_snap[0])**2 + (goal[1]-g_snap[1])**2 > 1e-6:
-            route.append(goal)
-
-        # de-dup consecutive identical points
+        route.append(goal)
+        # de-dup
         dedup = [route[0]]
         for p in route[1:]:
             if p != dedup[-1]:

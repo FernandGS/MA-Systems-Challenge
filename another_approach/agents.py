@@ -16,6 +16,7 @@ class BinObj:
     pos: Point
     capacity: int
     fill: int = 0
+    curb: Optional[Point] = None
 
     def step_fill(self, lo:int, hi:int, rnd)->bool:
         """Fill this bin randomly. Return True if overflow happened."""
@@ -53,13 +54,18 @@ class Truck:
         meters_left = self.energy / max(1e-9,self.cfg["ENERGY_PER_M"])
         return meters_left >= (dist(self.pos,depot)+self.cfg["ENERGY_RESERVE_M"])
 
-    def assign_target(self, route_pts: List[Point], bin_id: Optional[str], final_target: Point):
-        """Assign a whole route polyline; last point is the final target."""
-        self.route_pts = list(route_pts)
-        self.route_i = 0
+    def assign_target(self, route_pts, bin_id, final_target):
+        self.route_pts = [p for i,p in enumerate(route_pts)
+                        if i == 0 or dist(route_pts[i-1], p) > 1e-3]
+        # drop leading point if it's basically current position
+        if self.route_pts and dist(self.pos, self.route_pts[0]) < 0.5:
+            self.route_i = 1
+        else:
+            self.route_i = 0
         self.assigned_bin = bin_id
         self.target = final_target
         self.state = "moving"
+
 
     def _move_along_route(self, dt: float) -> float:
         """Follow route_pts[route_i:] along roads. Returns incremental € cost."""
@@ -130,13 +136,18 @@ class Truck:
                 c = self._move_along_route(dt)
             else:
                 tgt = self.target if self.target else depot
-                c = self._move_towards(tgt, dt)
-            reward -= c
+                route = cfg.get("plan_route_fn")(self.pos, tgt) if "plan_route_fn" in cfg else None
+                if route is None:
+                    # fall back to depot route if needed
+                    route = cfg["plan_route_fn"](self.pos, depot) if "plan_route_fn" in cfg else [self.pos, tgt]
+                self.assign_target(route, self.assigned_bin, tgt)
+                c = self._move_along_route(dt)
 
 
         elif action == 1:  # pickup
+            thr = cfg.get("APPROACH_RADIUS_M", 3.0)
             for b in bins:
-                if dist(self.pos,b.pos)<1.0 and b.fill>0:
+                if dist(self.pos,b.pos)<thr and b.fill>0:
                     take = min(cfg["TRUCK_CAPACITY"]-self.load,b.fill)
                     if take>0:
                         self.load += take
@@ -180,13 +191,14 @@ class Truck:
                 events.append({"type":"recharge","truck":self.tid})
 
         # servicing bin
+        thr = self.cfg.get("APPROACH_RADIUS_M", 3.0)
         for b in bins:
-            if self.assigned_bin==b.id and dist(self.pos,b.pos)<1.0 and b.fill>0:
-                take=min(self.cfg["TRUCK_CAPACITY"]-self.load,b.fill)
-                if take>0:
-                    self.load+=take; b.fill-=take
+            if self.assigned_bin == b.id and dist(self.pos, b.pos) < thr and b.fill > 0:
+                take = min(self.cfg["TRUCK_CAPACITY"]-self.load, b.fill)
+                if take > 0:
+                    self.load += take; b.fill -= take
                     events.append({"type":"pickup","truck":self.tid,"bin":b.id,"amount":take})
-                if self.load>=self.cfg["TRUCK_CAPACITY"] or b.fill==0:
+                if self.load >= self.cfg["TRUCK_CAPACITY"] or b.fill == 0:
                     self.assigned_bin = None
                     route = plan_route(self.pos, depot)
                     self.assign_target(route, None, depot)
@@ -197,9 +209,9 @@ class Truck:
         if self.route_pts:
             self._move_along_route(dt)
         elif self.target:
-            # legacy fallback if a target exists but no route (shouldn't happen in baseline)
-            self._move_towards(self.target, dt)
-            if dist(self.pos, self.target) < 0.5:
-                self.state = "idle"
+            # (Re)plan from current position to the target along roads
+            route = plan_route(self.pos, self.target)
+            self.assign_target(route, self.assigned_bin, self.target)
+            self._move_along_route(dt)
                 
         return events

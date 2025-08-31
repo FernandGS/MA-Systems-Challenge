@@ -69,8 +69,9 @@ def auction(bins: List[BinObj], trucks: List[Truck], now: float, cfg: dict, plan
                     if c < best_cost:
                         best_t, best_b, best_cost = t, b, c
             # assign
-            route = plan_route(best_t.pos, best_b.pos)
-            best_t.assign_target(route, best_b.id, best_b.pos)
+            curb = getattr(best_b, "curb", best_b.pos)
+            route = plan_route(best_t.pos, curb)
+            best_t.assign_target(route, best_b.id, curb)
             assigned_bins.add(best_b.id)
             free_trucks.remove(best_t)
             remaining_bins = [b for b in remaining_bins if b.id != best_b.id]
@@ -92,7 +93,8 @@ def auction(bins: List[BinObj], trucks: List[Truck], now: float, cfg: dict, plan
         if not remaining:
             break
         b0 = min(remaining, key=lambda bb: dist(t.pos, bb.pos))
-        route = plan_route(t.pos, b0.pos)
-        t.assign_target(route, b0.id, b0.pos)
+        curb = getattr(b0, "curb", b0.pos)
+        route = plan_route(t.pos, curb)
+        t.assign_target(route, b0.id, curb)
         assigned_bins.add(b0.id)
         remaining = [b for b in remaining if b.id != b0.id]
