@@ -8,6 +8,7 @@ from matplotlib.animation import FuncAnimation
 import matplotlib.lines as mlines
 from collections import deque
 from math import inf
+import numpy as np
 
 # ==============================================================
 # Helper: BFS next step along streets
@@ -279,10 +280,16 @@ class Truck(ap.Agent):
             dumped_units=dumped_units,
             overflowed=overflowed, energy_zero=energy_zero
         )
+        r += getattr(self.model, "env_penalty", 0.0)
 
         self.ensure_state(s2)
         self.Q[s][a] += self.alpha * (r + self.gamma * max(self.Q[s2].values()) - self.Q[s][a])
 
+        # logging rewards
+        if not hasattr(self.model, "truck_rewards"):
+            self.model.truck_rewards = {tid: [] for tid in range(len(self.model.trucks))}
+        tid = self.model.trucks.index(self)
+        self.model.truck_rewards[tid].append(r)
 
 # ==============================================================
 # Model
@@ -305,6 +312,7 @@ class WasteModel(ap.Model):
     def setup(self):
         random.seed(self.p.get("seed", 42))
         self.space = ap.Grid(self, [20, 20], track_empty=True)
+        self.env_penalty = 0.0
 
         # Street lattice
         self.street_coords = set()
@@ -329,9 +337,29 @@ class WasteModel(ap.Model):
         self.history = []
 
     def step(self):
-        self.trucks.step()
+        # --- 2a) Detect overflows this tick ---
+        prev_fills = [b.fill for b in self.bins]
+
+        # advance bins first
         self.bins.step()
 
+        # count bins that crossed into "full" this tick
+        overflow_count = 0
+        for i, b in enumerate(self.bins):
+            if prev_fills[i] < b.capacity_max and b.fill >= b.capacity_max:
+                overflow_count += 1
+
+        # set per-tick penalty (each truck will read this)
+        punish = self.p["rewards"].get("bin_overflow_punish", -200.0)
+        self.env_penalty = overflow_count * punish
+
+        # --- 2b) Trucks act (and will consume env_penalty) ---
+        self.trucks.step()
+
+        # (optional) reset right after trucks stepped
+        # self.env_penalty = 0.0  # not strictly necessary if overwritten each tick
+
+        # --- logging / t++ as before ---
         self.history.append({
             "step": int(self.t),
             "trucks": [
@@ -447,7 +475,20 @@ def visualize(parameters, steps=600, q_path="trained_agents.pkl"):
 
     anim = FuncAnimation(fig, draw, frames=steps, interval=30, repeat=False)
     plt.show()
+    plot_rewards(model)
     return anim
+
+def plot_rewards(model):
+    plt.figure(figsize=(8,5))
+    for tid, rewards in model.truck_rewards.items():
+        cum = np.cumsum(rewards)
+        plt.plot(cum, label=f"Truck {tid}")
+    plt.xlabel("Step")
+    plt.ylabel("Cumulative Reward")
+    plt.title("Total Reward vs Time per Truck")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 
 # ==============================================================
@@ -459,7 +500,7 @@ def main():
         # world
         "seed": 42,
         "n_bins": 10,
-        "n_trucks": 3,
+        "n_trucks": 4,
 
         # bins
         "capacity_max": 100,
@@ -484,15 +525,16 @@ def main():
             "move_cost": -0.01,
             "dump_unit_reward": +2,
             "pickup_base_bonus_per_unit": +5,
-            "pickup_fullness_bonus_scale": +10000,
-            "overflow_punish": -100_000_000.0,
+            "pickup_fullness_bonus_scale": +10,
+            "overflow_punish": -20.0,
+            "bin_overflow_punish": -500.0,
             "energy_zero_punish": -1000.0
         }
     }
 
     # --- choose one ---
-    train_and_save(params, steps_total=100_000)
-    visualize(params, steps=600)
+    #train_and_save(params, steps_total=100_000)
+    visualize(params, steps=300)
 
 if __name__ == "__main__":
     main()
