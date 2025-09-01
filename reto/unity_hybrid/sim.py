@@ -2,6 +2,10 @@ from typing import List, Dict
 import random, json
 from agents import Truck, BinObj
 from dispatch import auction
+try:
+    from rl_policy import DQNManager
+except Exception:
+    DQNManager = None  # type: ignore
 
 class Simulation:
     def __init__(self, cfg, city, planner="graph", grid_passable=None):
@@ -25,6 +29,10 @@ class Simulation:
         # Logs
         self.frames: List[Dict] = []
         self.events: List[Dict] = []
+        # RL manager if using DQN
+        self.rl: object | None = None
+        if self.cfg.get("POLICY", "auction") == "dqn" and DQNManager is not None:
+            self.rl = DQNManager(self.cfg)
 
     def _rnd(self):
         return random.Random(int(self.t) ^ self.cfg["SEED"])
@@ -62,8 +70,13 @@ class Simulation:
             # accumulate penalties on events consumer; exporter will tally
             pass
 
-        # 2. Auction with ASSIGN events
-        assigns = auction(self.bins, self.trucks, self.t, self.cfg, self._plan_route)
+        # 2. Assignment policy (auction or DQN)
+        assigns = []
+        if self.cfg.get("POLICY", "auction") == "dqn" and self.rl is not None:
+            self.rl.start_step(self.trucks)
+            assigns = self.rl.select_and_assign(self.city, self.bins, self.trucks, self.t, self._plan_route)
+        else:
+            assigns = auction(self.bins, self.trucks, self.t, self.cfg, self._plan_route)
         for ev in assigns:
             self.events.append({"t": self.t, "type": "assign", "truck": ev["truck"], "bin": ev["bin"]})
 
@@ -80,6 +93,9 @@ class Simulation:
                         b.last_service_t = self.t
                 step_events.append(ev)
         self.events.extend(step_events)
+        # RL learning at end of step
+        if self.cfg.get("POLICY", "auction") == "dqn" and self.rl is not None:
+            self.rl.end_step_and_learn(self.city, self.bins, self.trucks, self.t, step_events)
 
         # 4. Log frame
         frame = {

@@ -98,11 +98,6 @@ class City:
         return path
 
     def plan_route(self, start: Point, goal: Point) -> List[Point]:
-        """Plan road-constrained route.
-        - Snap start/goal to nearest road waypoints
-        - Use Dijkstra over the road graph
-        - Return polyline along waypoints only; callers should append exact curb/depot if needed
-        """
         si = self.nearest_waypoint_idx(start)
         gi = self.nearest_waypoint_idx(goal)
         idx_path = self._dijkstra(si, gi)

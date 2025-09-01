@@ -74,6 +74,7 @@ class SimRequest(BaseModel):
     urgency_horizon_s: Optional[int] = None
     coverage_bias: Optional[float] = None
     service_cooldown_s: Optional[float] = None
+    policy: Optional[str] = None  # 'auction' | 'dqn'
 
 
 class DefaultsRequest(BaseModel):
@@ -89,15 +90,12 @@ class DefaultsRequest(BaseModel):
     urgency_horizon_s: Optional[int] = None
     coverage_bias: Optional[float] = None
     service_cooldown_s: Optional[float] = None
+    policy: Optional[str] = None  # 'auction' | 'dqn'
 
 
 # Local helpers (copied/adapted from exporter) ---------------------------------
 
 def _build_agent_paths_from_events(city: 'City', sim: 'Simulation'):
-    """Reconstruct per-truck paths following the road graph, using event targets.
-    This avoids diagonal/off-road moves by stitching City.plan_route segments between
-    depot -> assigned bin curbs -> depot (at end).
-    """
     # Build bin id -> curb/pos map
     bin_pos = {}
     for b in sim.bins:
@@ -358,7 +356,7 @@ def _run_simulation(cfg: Dict[str, Any], steps: int, planner: str):
 def _apply_overrides(cfg: Dict[str, Any], *, seed=None, num_agents=None, num_waste_locations=None,
                      bin_capacity=None, truck_speed=None, sidewalk_offset=None,
                      opportunistic_fill_frac=None, urgency_horizon_s=None, coverage_bias=None,
-                     service_cooldown_s=None) -> None:
+                     service_cooldown_s=None, policy=None) -> None:
     if seed is not None:
         cfg["SEED"] = int(seed)
     if num_agents is not None:
@@ -379,6 +377,10 @@ def _apply_overrides(cfg: Dict[str, Any], *, seed=None, num_agents=None, num_was
         cfg["COVERAGE_BIAS"] = float(coverage_bias)
     if service_cooldown_s is not None:
         cfg["SERVICE_COOLDOWN_S"] = float(service_cooldown_s)
+    if policy is not None:
+        p = str(policy).strip().lower()
+        if p in ("auction", "dqn"):
+            cfg["POLICY"] = p
 
 
 # Routes -----------------------------------------------------------------------
@@ -424,6 +426,8 @@ def set_defaults(req: DefaultsRequest):
         DEFAULT_OVERRIDES['coverage_bias'] = float(req.coverage_bias)
     if req.service_cooldown_s is not None:
         DEFAULT_OVERRIDES['service_cooldown_s'] = float(req.service_cooldown_s)
+    if req.policy is not None:
+        DEFAULT_OVERRIDES['policy'] = str(req.policy)
     _save_defaults_to_disk()
     return {"ok": True, "defaults": deepcopy(DEFAULT_OVERRIDES)}
 
@@ -442,7 +446,8 @@ def simulate(req: SimRequest, request: Request):
                      opportunistic_fill_frac=DEFAULT_OVERRIDES.get('opportunistic_fill_frac'),
                      urgency_horizon_s=DEFAULT_OVERRIDES.get('urgency_horizon_s'),
                      coverage_bias=DEFAULT_OVERRIDES.get('coverage_bias'),
-                     service_cooldown_s=DEFAULT_OVERRIDES.get('service_cooldown_s'))
+                     service_cooldown_s=DEFAULT_OVERRIDES.get('service_cooldown_s'),
+                     policy=DEFAULT_OVERRIDES.get('policy'))
 
     # 1) Apply JSON body overrides
     _apply_overrides(cfg,
@@ -455,7 +460,8 @@ def simulate(req: SimRequest, request: Request):
                      opportunistic_fill_frac=req.opportunistic_fill_frac,
                      urgency_horizon_s=req.urgency_horizon_s,
                      coverage_bias=req.coverage_bias,
-                     service_cooldown_s=req.service_cooldown_s)
+                     service_cooldown_s=req.service_cooldown_s,
+                     policy=req.policy)
 
     # 2) Also honor query params on POST (handy if client appends ?seed=... etc.)
     qp = request.query_params
@@ -469,7 +475,8 @@ def simulate(req: SimRequest, request: Request):
                      opportunistic_fill_frac=qp.get('opportunistic_fill_frac'),
                      urgency_horizon_s=qp.get('urgency_horizon_s'),
                      coverage_bias=qp.get('coverage_bias'),
-                     service_cooldown_s=qp.get('service_cooldown_s'))
+                     service_cooldown_s=qp.get('service_cooldown_s'),
+                     policy=qp.get('policy'))
 
     steps = int((qp.get('steps') if 'steps' in qp else (req.steps if req.steps is not None else (DEFAULT_OVERRIDES.get('steps') or 600))))
     planner = (qp.get('planner') if 'planner' in qp else (req.planner if req.planner is not None else (DEFAULT_OVERRIDES.get('planner') or 'graph')))
@@ -493,6 +500,7 @@ def simulate_get(
     urgency_horizon_s: Optional[int] = None,
     coverage_bias: Optional[float] = None,
     service_cooldown_s: Optional[float] = None,
+    policy: Optional[str] = None,
 ):
     cfg = deepcopy(CONFIG)
     # Apply server defaults first
@@ -527,6 +535,10 @@ def simulate_get(
         cfg["COVERAGE_BIAS"] = float(coverage_bias)
     if service_cooldown_s is not None:
         cfg["SERVICE_COOLDOWN_S"] = float(service_cooldown_s)
+    if policy is not None:
+        p = str(policy).strip().lower()
+        if p in ("auction", "dqn"):
+            cfg["POLICY"] = p
 
     # Steps/planner fallback to server defaults too
     eff_steps = int(steps if steps is not None else (DEFAULT_OVERRIDES.get('steps') or 600))
@@ -682,6 +694,9 @@ def index():
                     <div><label>coverage_bias</label><input id=\"d_cov\" type=\"number\" step=\"0.05\" min=\"0\" max=\"1\" name=\"coverage_bias\" placeholder=\"0.50\"></div>
                     <div><label>urgency_horizon_s</label><input id=\"d_urg\" type=\"number\" name=\"urgency_horizon_s\" placeholder=\"120\"></div>
                     <div><label>service_cooldown_s</label><input id=\"d_cool\" type=\"number\" step=\"1\" min=\"0\" name=\"service_cooldown_s\" placeholder=\"300\"></div>
+                    <div><label>policy</label>
+                        <select id=\"d_policy\" name=\"policy\">\n                            <option value=\"\">(keep)</option>\n                            <option value=\"auction\">auction</option>\n                            <option value=\"dqn\">dqn</option>\n                        </select>
+                    </div>
                 </div>
                 <p><button type=\"submit\">Save defaults</button></p>
             </form>
@@ -709,7 +724,8 @@ def index():
                 opportunistic_fill_frac: valNum('d_off', true),
                     urgency_horizon_s: valNum('d_urg'),
                     coverage_bias: valNum('d_cov', true),
-                    service_cooldown_s: valNum('d_cool')
+                    service_cooldown_s: valNum('d_cool'),
+                    policy: (document.getElementById('d_policy').value || undefined)
             };
             // remove undefined
             Object.keys(body).forEach(k=> body[k]===undefined && delete body[k]);

@@ -16,7 +16,6 @@ class BinObj:
     capacity: int
     fill: int = 0
     curb: Optional[Point] = None
-    # last simulation time when this bin was serviced; used for cooldown in dispatch
     last_service_t: float = -1.0
 
     def step_fill(self, lo: int, hi: int, rnd) -> bool:

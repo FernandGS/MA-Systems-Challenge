@@ -1,6 +1,6 @@
 try:
     import agentpy as ap
-except Exception:  # agentpy may not be installed; exporter will fallback
+except Exception:  
     ap = None
 
 from typing import Any, List
@@ -12,8 +12,6 @@ from dispatch import auction
 if ap:
     class TruckAgent(ap.Agent):  # type: ignore[misc]
         def setup(self):  # type: ignore[override]
-            # Underlying domain object is injected by model
-            # self.truck: agents.Truck
             pass
 
         def step(self):  # type: ignore[override]
@@ -34,14 +32,6 @@ else:
 
 
 class WasteSimModel(ap.Model if ap else object):  # type: ignore[misc]
-    """
-    AgentPy model that wraps existing City/Simulation and exposes Truck/Bin as ap.Agent wrappers.
-    Delegates core logic (routing, service, costs) to existing code to preserve behavior.
-    Params expected in ap.Parameters:
-      - cfg: dict
-      - steps: int
-      - planner: "graph"|"grid"
-    """
 
     def setup(self):  # type: ignore[override]
         p = getattr(self, 'p', None)

@@ -6,7 +6,6 @@ CONFIG = {
     "SEED": 42,
     # Road layout mode: 'manual' uses WAYPOINTS/ROADS below; 'grid' builds an orthogonal grid across MAP_SIZE
     "ROAD_LAYOUT": "grid",  # 'manual' | 'grid'
-    # Grid layout parameters (used when ROAD_LAYOUT == 'grid')
     # Either set rows/cols (blocks) or spacing; margin keeps roads inside the border
     "GRID_ROWS": 6,
     "GRID_COLS": 6,
@@ -63,6 +62,29 @@ CONFIG = {
     # Time
     "DT": 1.0,
     "STEPS_PER_DAY": 1200,
+
+    # Policy: 'auction' (default) or 'dqn'
+    "POLICY": "auction",
+    # DQN candidate set size
+    "DQN_K_CANDS": 6,
+    # Reward shaping (tuned for stability)
+    "RL_REWARD_PICKUP": 0.1,     # per unit collected
+    "RL_REWARD_DUMP": 2.0,
+    "RL_REWARD_OVERFLOW": -20.0,
+    "RL_COST_PER_KM": 10.0,
+    # DQN hyperparameters (tuned)
+    "HIDDEN": 256,
+    "LR": 5e-4,
+    "GAMMA": 0.99,
+    "EPS_START": 0.8,
+    "EPS_END": 0.05,            # minimum epsilon
+    "EPS_DECAY": 0.997,         # multiplicative per update
+    "BUFFER_SIZE": 100_000,
+    "BATCH_SIZE": 128,
+    "TAU": 0.005,
+    # Persistence
+    "DQN_WEIGHTS_DIR": "dqn_weights",  # folder relative to repo root
+    "DQN_SAVE_EVERY_STEPS": 200,        # save frequency during sim (steps)
 
     # Grid planner (optional)
     "GRID_SIZE": 150,
