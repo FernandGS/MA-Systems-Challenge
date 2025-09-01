@@ -1,105 +1,129 @@
-# Waste Collection Simulation + Unity Viewer
+# Waste Collection Multi‑Agent Simulation + Unity Export (Hybrid)
 
-This repo contains:
-- `agen_simulation.py` – AgentPy simulation logic (batch/offline run)
-- `server.py` – FastAPI server exposing a `/simulate` endpoint that returns Unity‑ready JSON
-- `unity.cs` – Unity MonoBehaviour (`SimulationPlayer_PathObj`) to visualize simulation (local JSON file or remote HTTP)
+This repo provides a streamlined, self‑contained exporter in `unity_hybrid/` that generates Unity‑ready JSON. It preserves your original routing/dispatch logic and optionally integrates agentpy for scheduling and data collection.
 
-## 1. Python Server (Windows PowerShell)
-From the project folder (`reto/`):
+## What to use now
+
+- `unity_hybrid/export_unity.py` — Run this to generate `sim_run_pathObj.json` (Unity) and `full_log.json` (detailed log)
+- `SimulationPlayer_PathObj.cs` — Unity MonoBehaviour that loads and animates the JSON
+
+Optional (only if you want agentpy features)
+
+- `unity_hybrid/ap_model.py` — AgentPy model wrappers used automatically if agentpy is installed
+
+Legacy (safe to archive if you won’t use them)
+
+- `ced/`, `unity_runner/`, `agen_simulation.py`, `server.py` — Older pipelines and wrappers
+
+## Requirements
+
+- Python 3.9+
+- No mandatory dependencies. Optional: `agentpy` (to run via agentpy scheduler), `pillow` (for future grid mask loading)
+
+PowerShell (optional venv)
 
 ```powershell
-# (Optional) Create / activate venv if not already
-python -m venv .venv
-& .\.venv\Scripts\Activate.ps1
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install agentpy  # optional
+```
 
-# Install dependencies
-pip install fastapi uvicorn agentpy
+## Generate JSON for Unity
 
-# Run server
-python server.py
-```
-You should see: `Uvicorn running on http://0.0.0.0:8000`.
+From the repo root:
 
-### Test endpoints
-Open a browser:
-```
-http://127.0.0.1:8000/health
-```
-Interactive docs:
-```
-http://127.0.0.1:8000/docs
-```
-Example POST (PowerShell):
 ```powershell
-Invoke-RestMethod -Uri http://127.0.0.1:8000/simulate -Method Post -ContentType 'application/json' -Body '{}'
+python .\unity_hybrid\export_unity.py --steps 300 --trucks 3 --bins 12
 ```
 
-### Override parameters
-Send JSON body like:
+Flags
+
+- `--steps` Number of simulation steps
+- `--trucks` Number of trucks
+- `--bins` Number of bins
+- `--bin-cap` Bin capacity (default from config)
+- `--planner graph|grid` Planner choice (graph is default; grid is stubbed for future mask support)
+
+Outputs
+
+- `sim_run_pathObj.json` — Unity SimData (grid, agents with pathObj, bins, events, metrics)
+- `full_log.json` — Full frames+events log + cfg
+
+## Unity usage
+
+1) Copy `sim_run_pathObj.json` to your Unity project under `Assets/StreamingAssets/`
+2) Add `SimulationPlayer_PathObj` (provided in `SimulationPlayer_PathObj.cs`) to a GameObject
+3) Assign `TruckPrefab` and `BinPrefab` in the Inspector
+4) Press Play to see trucks/bins animate
+
+Notes
+
+- The script smoothly interpolates position/rotation each step and prints basic KPIs.
+- If incoming paths are static, it can rebuild them from events (toggle `rebuildStaticPathsFromEvents`).
+
+## REST API (for Unity remote mode)
+
+Run the server (PowerShell):
+
+```powershell
+python -m venv .venv; .\.venv\Scripts\Activate.ps1
+pip install --upgrade pip
+pip install -r requirements.txt
+uvicorn server_rest:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Endpoints
+
+- GET `/health` → `{ ok: true }`
+- GET `/config` → current default CONFIG
+- GET `/defaults` → server-side defaults that are applied when params are omitted
+- POST `/defaults` → set server-side defaults (JSON body; all fields optional)
+- POST `/simulate` → returns Unity SimData JSON
+- GET `/simulate` → same result using query params (handy for browsers)
+- GET `/schema` → SimData JSON schema
+- GET `/` → Simple index page with links and a form to call /simulate
+
+Example POST body (all fields optional):
+
 ```json
-{
-  "seed": 42,
-  "num_agents": 5,
-  "num_waste_locations": 20,
-  "truck_speed": 1.3,
-  "return_speed_factor": 1.6
-}
+{ "seed": 42, "num_agents": 4, "num_waste_locations": 15, "bin_capacity": 120, "steps": 1200, "planner": "graph", "truck_speed": 6.0 }
 ```
-If you omit `num_agents` or `num_waste_locations`, the server randomizes them (>=3 / >=10).
 
-## 2. Unity Setup
-1. Copy `unity.cs` into your Unity `Assets/Scripts` folder (or keep existing). The class name is `SimulationPlayer_PathObj`.
-2. Create prefabs:
-   - `TruckPrefab` (e.g., a colored Cube)
-   - `BinPrefab` (another Cube or cylinder)
-3. Create an empty GameObject in the scene, name it `SimulationPlayer` and attach the script.
-4. In Inspector set:
-   - `Use Remote` = true (to fetch from Python server)
-   - `Remote Url` = `http://127.0.0.1:8000/simulate`
-   - Optionally set `Seed Override`, `Num Agents Override`, `Num Bins Override` (0 / -1 means let server decide)
-   - Adjust `Cell Size` (grid -> world scaling) & `Step Duration` (animation speed)
-5. Enter Play Mode. The script POSTs to the server, receives JSON, spawns bins & trucks, then animates paths.
+Example GET (browser):
 
-### Local (offline) playback
-If you want to play back a previously generated run:
-1. Save JSON returned by `/simulate` as `sim_run_pathObj.json`.
-2. Place it in `Assets/StreamingAssets/` folder (create if missing).
-3. Uncheck `Use Remote` and keep `jsonFileName = sim_run_pathObj.json`.
-4. Press Play.
-
-## 3. Troubleshooting
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| Unity logs `Remote fetch failed` | Server not running / wrong URL | Start server, verify `/health` works, update URL |
-| PowerShell cannot import FastAPI | Venv not activated | `& .\.venv\Scripts\Activate.ps1` then `pip install fastapi uvicorn agentpy` |
-| CORS error in logs (WebGL) | Different host/port | CORS already allows `*`; ensure no proxy blocking |
-| Empty scene (no trucks) | JSON parse failed | Check Unity Console for parse error & view raw response in browser |
-| Slow animation | Very long path (many steps) | Increase `stepDuration` or reduce grid size / parameters |
-
-## 4. JSON Shape (from server)
+```text
+http://127.0.0.1:8000/simulate?steps=120&num_agents=3&num_waste_locations=10&truck_speed=2.0
 ```
+
+Unity: set `useRemote = true` and `remoteUrl = http://127.0.0.1:8000/simulate` in `SimulationPlayer_PathObj`.
+
+Tip: Use the index page “Set server defaults” card or POST `/defaults` so Unity can keep a constant URL without querystring. `/simulate` will apply saved defaults unless the request explicitly overrides them.
+
+## How agentpy is used here (optional)
+
+If `agentpy` is installed, the exporter will run via a thin agentpy model (`WasteSimModel`) that:
+
+- Wraps each Truck/Bin as `ap.Agent` instances
+- Uses `AgentList.step()` as the scheduler but delegates all behavior to your existing classes
+- Records simple series (events_total) and reports totals at the end
+
+Behavior of the simulation and the JSON output remains the same either way.
+
+## JSON shape (for reference)
+
+```text
 {
-  "grid": {"width":100,"height":100,"depot":[0,0]},
-  "agents": [ {"id":0,"start":[x,y],"pathObj":[{"x":..,"y":..},...],"distance":float,"collected":int,"capacity":int}, ... ],
-  "bins": [ {"id":0,"pos":[x,y],"initial":int,"remaining":int}, ... ],
-  "events": [ {"t":step,"type":"SERVICE","agent":id,"bin":id,"amount":q}, ... ],
+  "grid": {"width":int, "height":int, "depot":[x,y]},
+  "agents": [ {"id":int, "start":[x,y], "pathObj":[{"x":int,"y":int}...], "distance":int, "collected":int, "capacity":int }, ... ],
+  "bins": [ {"id":int, "pos":[x,y], "initial":int, "remaining":int }, ... ],
+  "events": [ {"t":int, "type":"ASSIGN|SERVICE|DUMP|RECHARGE|OVERFLOW", "agent"?:int, "bin"?:int, "amount"?:int }, ... ],
   "metrics": {"total_collected":int, "avg_distance_per_agent":float, "negotiation_messages":int, "steps":int }
 }
 ```
 
-## 5. Extending
-- Add a WebSocket endpoint for streaming step-by-step instead of full path array.
-- Visual indicators in Unity (e.g., bin fill level via scale / color).
-- UI panel to send new simulation parameter overrides without exiting Play Mode.
+## Cleaning up (optional)
 
-## 6. Quick Run Summary
-```powershell
-# From repo root
-& .\.venv\Scripts\Activate.ps1
-python server.py  # keep running
-```
-Then Play in Unity with `Use Remote = true`.
+To keep this repo lean for Unity export, you can delete or archive: `ced/`, `unity_runner/`, `agen_simulation.py`, `server.py`, `__pycache__/`, `sim_run_pathObj.json`, `full_log.json` (regenerate anytime).
 
 ---
-Feel free to request a WebSocket live mode or incremental streaming next.
+Updated on 2025‑08‑31.
