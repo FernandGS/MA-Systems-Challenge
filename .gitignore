@@ -1,3 +1,6 @@
 .venv
 ./**.json
-
+.idea/
+.pytest_cache/
+__pycache__/
+.gitignore
