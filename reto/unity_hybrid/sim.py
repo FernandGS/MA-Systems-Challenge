@@ -29,10 +29,15 @@ class Simulation:
         # Logs
         self.frames: List[Dict] = []
         self.events: List[Dict] = []
-        # RL manager if using DQN
+        # RL manager if using DQN (graceful fallback if unavailable)
         self.rl: object | None = None
         if self.cfg.get("POLICY", "auction") == "dqn" and DQNManager is not None:
-            self.rl = DQNManager(self.cfg)
+            try:
+                self.rl = DQNManager(self.cfg)
+            except Exception:
+                # If DQN dependencies (torch/dqn_agent.py) are missing, fall back to auction
+                self.rl = None
+                self.cfg["POLICY"] = "auction"
 
     def _rnd(self):
         return random.Random(int(self.t) ^ self.cfg["SEED"])

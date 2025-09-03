@@ -137,13 +137,15 @@ def _build_agent_paths_from_events(city: 'City', sim: 'Simulation'):
         # not axis-aligned: Manhattan fallback
         return _manhattan_expand(p0, p1)
 
-    for t in sim.trucks:
+    for rank, t in enumerate(sim.trucks):
         tid = t.tid
         # Start at depot
         start = [int(round(city.depot[0])), int(round(city.depot[1]))]
         starts[tid] = start
         cur = (float(city.depot[0]), float(city.depot[1]))
-        path_cells = [{"x": start[0], "y": start[1]}]
+        # Small stagger to reduce pile-ups at the depot: delay later trucks by a few frames
+        pad = max(0, min(rank, 5)) * 2  # up to 10 frames for the last few trucks
+        path_cells = [{"x": start[0], "y": start[1]}] * (1 + pad)
 
         # Sort events chronologically
         evs = sorted(events_by_truck.get(tid, []), key=lambda e: e.get('t', 0))
@@ -162,8 +164,13 @@ def _build_agent_paths_from_events(city: 'City', sim: 'Simulation'):
                 if not targets or targets[-1] != city.depot:
                     targets.append(city.depot)
 
+        # Maintain previous waypoint index to avoid immediate U-turns when chaining targets
+        prev_wp_idx = None
+        cur_wp_idx = city.nearest_waypoint_idx(cur)
+
         def _append_route(cur_pt, tgt_pt):
-            route = city.plan_route(cur_pt, tgt_pt) or [cur_pt, tgt_pt]
+            nonlocal prev_wp_idx, cur_wp_idx, path_cells
+            route = city.plan_route(cur_pt, tgt_pt, prev_idx=prev_wp_idx) or [cur_pt, tgt_pt]
             if not route or route[-1] != tgt_pt:
                 route = route + [tgt_pt]
             # Densify along each segment on the road
@@ -184,7 +191,13 @@ def _build_agent_paths_from_events(city: 'City', sim: 'Simulation'):
                 if seg2:
                     path_cells.extend(seg2)
                     last_cell = path_cells[-1]
-
+            # Update waypoint indices for U-turn prevention on next leg
+            if len(route) >= 2:
+                prev_wp_idx = city.nearest_waypoint_idx(route[-2])
+                cur_wp_idx = city.nearest_waypoint_idx(route[-1])
+            else:
+                prev_wp_idx = cur_wp_idx
+                cur_wp_idx = city.nearest_waypoint_idx(route[-1])
             return route[-1] if route else cur_pt
 
         # Stitch routes to all targets

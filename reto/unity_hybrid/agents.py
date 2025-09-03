@@ -16,7 +16,7 @@ class BinObj:
     capacity: int
     fill: int = 0
     curb: Optional[Point] = None
-    last_service_t: float = -1.0
+    last_service_t: float = -1e9
 
     def step_fill(self, lo: int, hi: int, rnd) -> bool:
         if self.fill < self.capacity:

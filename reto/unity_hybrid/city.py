@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional, Set
 import math, random
 
 Point = Tuple[float, float]
@@ -13,6 +13,7 @@ class Road:
 
 class City:
     def __init__(self, cfg: Dict):
+        self.cfg = cfg
         self.w, self.h = cfg["MAP_SIZE"]
         self.seed = cfg.get("SEED", 42)
         self.rnd = random.Random(self.seed)
@@ -21,10 +22,10 @@ class City:
         if cfg.get("ROAD_LAYOUT", "manual") == "grid":
             self._build_grid_roads(cfg)
         else:
-            self.waypoints: List[Point] = cfg["WAYPOINTS"]
-            self.roads: List[Road] = []
+            self.waypoints = cfg["WAYPOINTS"]
+            self.roads = []
             rid = 0
-            for (a,b) in cfg["ROADS"]:
+            for (a, b) in cfg["ROADS"]:
                 self.roads.append(Road(
                     id=f"r{rid}", a_idx=a, b_idx=b,
                     polyline=[self.waypoints[a], self.waypoints[b]]
@@ -46,7 +47,10 @@ class City:
             L = math.hypot(x2-x1,y2-y1)
             nx,ny = (-(y2-y1)/L,(x2-x1)/L) if L>1e-6 else (0.0,1.0)
             side = -1 if self.rnd.random()<0.5 else 1
-            pos = (cx+side*self.sidewalk_offset*nx, cy+side*self.sidewalk_offset*ny)
+            # Keep bin off the roadway: offset beyond road half-width
+            road_half = float(self.cfg.get("ROAD_HALF_WIDTH", 3.5))
+            sidewalk = max(self.sidewalk_offset, road_half + 0.5)
+            pos = (cx+side*sidewalk*nx, cy+side*sidewalk*ny)
             bins.append({"id": f"b{i}", "pos": pos, "curb": (cx, cy), "capacity": cap, "fill": self.rnd.randint(0,cap//2)})
         return bins
 
@@ -97,25 +101,77 @@ class City:
         path.reverse()
         return path
 
-    def plan_route(self, start: Point, goal: Point) -> List[Point]:
+    def _dijkstra_no_immediate_backtrack(self, start_idx: int, goal_idx: int, prev_idx: Optional[int], uturn_penalty: Optional[float] = None):
+        """Dijkstra over expanded state (node, prev) that discourages immediate backtracking (U-turns).
+        Adds a penalty when transitioning back to the previous node. Allows it if it's the only way.
+        """
+        adj, _coords = self.road_graph()
+        import heapq
+        # State is (node, prev_node) where prev_node can be None for the start
+        start_state = (start_idx, prev_idx)
+        if uturn_penalty is None:
+            uturn_penalty = float(self.cfg.get("UTURN_PENALTY", 200.0))
+        forbid_when_alt = bool(self.cfg.get("FORBID_UTURN_IF_ALTERNATIVE", True))
+        dist: Dict[Tuple[int, Optional[int]], float] = {start_state: 0.0}
+        prv: Dict[Tuple[int, Optional[int]], Optional[Tuple[int, Optional[int]]]] = {start_state: None}
+        pq: List[Tuple[float, Tuple[int, Optional[int]]]] = [(0.0, start_state)]
+        best_goal_state: Optional[Tuple[int, Optional[int]]] = None
+        best_goal_cost = float('inf')
+        while pq:
+            d, (u, pu) = heapq.heappop(pq)
+            if d > dist[(u, pu)]:
+                continue
+            if u == goal_idx and d < best_goal_cost:
+                best_goal_cost = d
+                best_goal_state = (u, pu)
+                # don't break; a later path may be even cheaper due to penalties
+            # Determine if there is any neighbor other than pu (previous). If so and forbid_when_alt, block backtrack.
+            has_alternative = any((v2 != pu) for (v2, _w2) in adj[u])
+            for v, w in adj[u]:
+                cost = w
+                if pu is not None and v == pu:
+                    if forbid_when_alt and has_alternative:
+                        continue  # hard forbid when there is any alternative
+                    cost += float(uturn_penalty)
+                nd = d + cost
+                sv = (v, u)
+                if nd < dist.get(sv, float('inf')):
+                    dist[sv] = nd
+                    prv[sv] = (u, pu)
+                    heapq.heappush(pq, (nd, sv))
+        if best_goal_state is None:
+            return None
+        # Reconstruct state path back to start
+        path_nodes: List[int] = []
+        cur: Optional[Tuple[int, Optional[int]]] = best_goal_state
+        while cur is not None:
+            u, _pu = cur
+            path_nodes.append(u)
+            cur = prv.get(cur)
+        path_nodes.reverse()
+        return path_nodes
+
+    def plan_route(self, start: Point, goal: Point, prev_idx: Optional[int] = None) -> List[Point]:
         si = self.nearest_waypoint_idx(start)
         gi = self.nearest_waypoint_idx(goal)
-        idx_path = self._dijkstra(si, gi)
+        # Discourage U-turns along the whole path
+        idx_path = self._dijkstra_no_immediate_backtrack(si, gi, prev_idx)
         if idx_path is None:
             # fallback to nearest reachable waypoint to goal
-            adj,_ = self.road_graph()
+            adj, _ = self.road_graph()
             from collections import deque
-            q,vis = deque([si]), {si}
+            q, vis = deque([si]), {si}
             while q:
                 u = q.popleft()
-                for v,_w in adj[u]:
+                for v, _w in adj[u]:
                     if v not in vis:
-                        vis.add(v); q.append(v)
-            gx,gy = self.waypoints[gi]
+                        vis.add(v)
+                        q.append(v)
+            gx, gy = self.waypoints[gi]
             if not vis:
                 return [start]
-            gi2 = min(vis, key=lambda i:(self.waypoints[i][0]-gx)**2+(self.waypoints[i][1]-gy)**2)
-            idx_path = self._dijkstra(si, gi2) or [si]
+            gi2 = min(vis, key=lambda i: (self.waypoints[i][0]-gx)**2 + (self.waypoints[i][1]-gy)**2)
+            idx_path = self._dijkstra_no_immediate_backtrack(si, gi2, prev_idx) or [si]
         route = [self.waypoints[i] for i in idx_path]
         # prefix with current start if far from first road node for continuity
         if route:
@@ -126,7 +182,8 @@ class City:
         # de-dup consecutive
         dedup = [route[0]]
         for p in route[1:]:
-            if p != dedup[-1]: dedup.append(p)
+            if p != dedup[-1]:
+                dedup.append(p)
         return dedup
 
     # -----------------

@@ -203,6 +203,9 @@ public class SimulationPlayer_PathObj : MonoBehaviour
                 }
                 var go = Instantiate(TruckPrefab, startPos, Quaternion.identity);
                 go.name = $"Truck_{a.id}";
+                // Add lightweight avoidance bubble component
+                if (go.GetComponent<TruckAvoidanceBubble>() == null)
+                    go.AddComponent<TruckAvoidanceBubble>();
                 trucks[a.id] = go;
 
                 if (a.pathObj == null || a.pathObj.Length == 0)
@@ -376,16 +379,37 @@ public class SimulationPlayer_PathObj : MonoBehaviour
     void StepOnce()
     {
         currentStep = Mathf.Min(currentStep + 1, totalSteps);
+        // First pass: compute desired target cell for each agent
+        var desiredCell = new Dictionary<int, Vector2Int>(data.agents.Length);
+        var cellCounts = new Dictionary<Vector2Int, int>();
+        foreach (var a in data.agents)
+        {
+            if (a.pathObj == null || a.pathObj.Length == 0) continue;
+            int idx = Mathf.Min(currentStep, a.pathObj.Length - 1);
+            var p = a.pathObj[idx];
+            var cell = new Vector2Int(p.x, p.y);
+            desiredCell[a.id] = cell;
+            if (cellCounts.TryGetValue(cell, out var c)) cellCounts[cell] = c + 1; else cellCounts[cell] = 1;
+        }
+
+        // Second pass: move or hold based on occupancy
         foreach (var a in data.agents)
         {
             if (!trucks.TryGetValue(a.id, out var go)) continue;
             if (a.pathObj == null || a.pathObj.Length == 0) continue;
-
             int idx = Mathf.Min(currentStep, a.pathObj.Length - 1);
+
+            // If this target cell is occupied by multiple agents, hold position for one frame
+            bool hold = false;
+            if (desiredCell.TryGetValue(a.id, out var cell))
+            {
+                if (cellCounts.TryGetValue(cell, out var cnt) && cnt > 1)
+                    hold = true;
+            }
+
             Vector3 target = GridToWorld(a.pathObj[idx].x, a.pathObj[idx].y);
             if (applyLaneOffsets) target = ApplyLaneOffset(a, idx, target);
 
-            // Determine desired rotation so the truck faces its movement direction
             Vector3 startPos = go.transform.position;
             Vector3 moveDir = target - startPos;
             Quaternion desiredRot = go.transform.rotation;
@@ -394,6 +418,12 @@ public class SimulationPlayer_PathObj : MonoBehaviour
                 Vector3 flatDir = new Vector3(moveDir.x, 0f, moveDir.z);
                 if (flatDir.sqrMagnitude > 1e-6f)
                     desiredRot = Quaternion.LookRotation(flatDir.normalized, Vector3.up);
+            }
+
+            if (hold)
+            {
+                // Skip movement this frame to avoid collision; keep current transform
+                continue;
             }
 
             if (smoothLerp) StartCoroutine(LerpTo(go.transform, target, stepDuration, desiredRot));

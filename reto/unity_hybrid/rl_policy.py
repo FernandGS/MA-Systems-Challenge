@@ -1,16 +1,8 @@
-"""
-RL policy integration for truck assignment using a per-truck DQN.
-
-- Builds a compact state vector per truck from truck/bins features.
-- Defines discrete actions: pick among top-K candidate bins, or go_depot, or idle.
-- Online learning: stores (s,a,r,s2,done) every step; reward is shaped from
-  pickups (+), movement cost (-), dump (+), and global overflow (-).
-"""
 from __future__ import annotations
 from typing import Dict, List, Tuple, Optional
 import math, sys, os, json
 
-# Allow importing dqn_agent.py from repo root
+# Allow importing dqn_agent.py
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -59,7 +51,8 @@ def _state_vector(truck: Truck, bins: List[BinObj], city, cfg: dict, now: float)
 class DQNManager:
     def __init__(self, cfg: dict):
         if DQNAgent is None:
-            raise RuntimeError("dqn_agent not available; install torch and keep dqn_agent.py in repo root")
+            # Constructing this without DQNAgent makes no sense; raise a friendly exception
+            raise RuntimeError("DQN disabled: torch/dqn_agent.py not available. Set POLICY='auction' or install torch.")
         self.cfg = cfg
         self.k = int(cfg.get("DQN_K_CANDS", 6))
         self.action_dim = self.k + 2  # K bins, + go_depot, + idle
