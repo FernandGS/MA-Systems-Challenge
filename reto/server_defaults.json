@@ -6,10 +6,10 @@
   "steps": 10000,
   "planner": "graph",
   "truck_speed": 2.5,
-  "sidewalk_offset": 2.0,
+  "sidewalk_offset": 8.0,
   "opportunistic_fill_frac": 0.6,
   "urgency_horizon_s": 900,
   "coverage_bias": 0.8,
   "service_cooldown_s": 800.0,
-  "policy": "dqn"
+  "policy": "auction"
 }
