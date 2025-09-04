@@ -426,23 +426,38 @@ if __name__ == "__main__":
     from sim import Simulation
 
     parser = argparse.ArgumentParser(description="Visualize waste collection simulation")
-    parser.add_argument("--steps", type=int, default=600, help="Number of simulation steps")
-    parser.add_argument("--policy", choices=["auction", "dqn"], default="auction", help="Dispatch policy")
-    parser.add_argument("--planner", choices=["graph", "grid"], default="graph", help="Routing planner")
-    parser.add_argument("--mode", choices=["live", "playback"], default="live", help="Visualization mode")
-    parser.add_argument("--ids", action="store_true", help="Show truck/bin IDs and labels")
-    parser.add_argument("--interval", type=int, default=40, help="Delay per frame in ms")
+    parser.add_argument("--steps", type=int, default=600)
+    parser.add_argument("--policy", choices=["auction", "dqn"], default="auction")
+    parser.add_argument("--planner", choices=["graph", "grid"], default="graph")
+    parser.add_argument("--mode", choices=["live", "playback"], default="live")
+    parser.add_argument("--ids", action="store_true")
+    parser.add_argument("--interval", type=int, default=40)
+    parser.add_argument("--weights-dir", type=str, default=None,
+                        help="DQN weights directory (e.g., dqn_weights). If provided, used for loading.")
+    parser.add_argument("--freeze-dqn", action="store_true",
+                        help="Run DQN in eval-only (no learning, no replay updates).")
+    parser.add_argument("--weights-dir", type=str, default=None,
+                        help="DQN weights directory (e.g., dqn_weights)")
+    parser.add_argument("--freeze-dqn", action="store_true",
+                        help="Disable DQN learning (eval only)")
+
     args = parser.parse_args()
 
-    # Copy base config and apply overrides
     cfg = CONFIG.copy()
     cfg["POLICY"] = args.policy
+    if args.weights_dir:
+        cfg["DQN_WEIGHTS_DIR"] = args.weights_dir
+    if args.freeze_dqn:
+        cfg["DQN_TRAIN_ENABLED"] = False
+        cfg["EPS_START"] = cfg.get("EPS_END", 0.05)
+        cfg["EPS_DECAY"] = 1.0
+
 
     city = City(cfg)
     sim = Simulation(cfg=cfg, city=city, planner=args.planner)
 
     if args.mode == "live":
         live(sim, steps=args.steps, show_ids=args.ids, interval_ms=args.interval)
-    else:  # playback
+    else:
         sim.run(args.steps)
         playback(sim, show_ids=args.ids, interval_ms=args.interval)

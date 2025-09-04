@@ -57,6 +57,7 @@ class DQNManager:
         self.k = int(cfg.get("DQN_K_CANDS", 6))
         self.action_dim = self.k + 2  # K bins, + go_depot, + idle
         self.obs_dim = 3 + 2 * self.k
+        self.train_enabled = bool(self.cfg.get("DQN_TRAIN_ENABLED", True))
         # One independent agent per truck id
         self.agents = {}
         # Per-truck transition cache
@@ -90,6 +91,8 @@ class DQNManager:
                     agent.target_net.load_state_dict(state)
             except Exception:
                 pass
+            if not self.train_enabled:
+                agent.eps = agent.eps_min
             self.agents[tid] = agent
         return self.agents[tid]
 
@@ -107,7 +110,8 @@ class DQNManager:
             # Build state
             s = _state_vector(t, bins, city, self.cfg, now)
             agent = self._get_agent(t.tid)
-            a = agent.act(s)
+            use_eval = (not self.train_enabled) or bool(self.cfg.get("FORCE_EVAL_ACT", False))
+            a = agent.act_eval(s) if use_eval else agent.act(s)
             self.prev_state[t.tid] = s
             self.prev_action[t.tid] = a
             # Decode action
@@ -133,6 +137,8 @@ class DQNManager:
         return events
 
     def end_step_and_learn(self, city, bins: List[BinObj], trucks: List[Truck], now: float, step_events: List[Dict]):
+        if not self.train_enabled:
+            return
         # Global overflow penalty for this step
         r_overflow = float(self.cfg.get("RL_REWARD_OVERFLOW", -5.0))
         step_overflows = sum(1 for e in step_events if e.get("type") == "overflow")
