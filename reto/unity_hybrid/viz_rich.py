@@ -2,13 +2,21 @@
 # viz_rich.py
 #
 # Rich matplotlib visualization for the waste-collection sim:
-# - Works in two modes:
+#
+# Modes:
 #   1) live(sim, steps, ...)     -> drives sim.step() and updates in-place
 #   2) playback(sim, ...)        -> animates existing sim.frames
-# - Shows: roads, depot, bins (fill%), recently serviced highlight, overflow flashes,
-#          trucks (energy color), per-truck route, targets, states, quick KPIs, event ticker.
+#   3) CLI                       -> run directly: python viz_rich.py [options]
 #
-# Usage examples (from repo root):
+# Shows:
+#   - Roads, depot, bins (fill% with color)
+#   - Recently serviced bins (cooldown rings)
+#   - Overflow flashes
+#   - Trucks (triangle, energy-colored, load/energy labels)
+#   - Per-truck routes (toggleable), targets, and states
+#   - Quick KPIs and event ticker
+#
+# Usage examples (interactive from Python REPL):
 #   >>> from config import CONFIG
 #   >>> from city import City
 #   >>> from sim import Simulation
@@ -21,8 +29,16 @@
 #   >>> sim.run(600)
 #   >>> viz_rich.playback(sim, show_ids=True, interval_ms=60)
 #
+# Usage examples (CLI from repo root):
+#   $ python viz_rich.py --steps 400 --policy auction --mode live --ids
+#   $ python viz_rich.py --steps 400 --policy dqn --mode playback
+#   $ python viz_rich.py --steps 300 --planner grid --mode live
+#
 # Keys (both modes):
-#   q = quit,  p = pause/resume,  n = step once (when paused),  r = toggle route lines
+#   q = quit
+#   p = pause/resume
+#   n = step once (when paused)
+#   r = toggle route lines
 
 from __future__ import annotations
 import time
