@@ -58,7 +58,36 @@ class Truck:
         for p in route_pts:
             if not cleaned or (dist(cleaned[-1], p) > 1e-3):
                 cleaned.append(p)
-        self.route_pts = cleaned
+        # Lane selection: right lane when moving up, left lane when moving down
+        shifted_pts = []
+        offset = 2.0
+        prev_was_vertical = False
+        lane = 0.0
+        for i, p in enumerate(cleaned):
+            if i > 0:
+                prev = cleaned[i-1]
+                is_vertical = abs(p[0] - prev[0]) < 1e-3 and abs(p[1] - prev[1]) > 1e-3
+                if is_vertical:
+                    # Determine direction: up or down
+                    if p[1] > prev[1]:
+                        lane = offset  # moving up, right lane
+                    elif p[1] < prev[1]:
+                        lane = -offset # moving down, left lane
+                    if not prev_was_vertical:
+                        # Insert a transition point before the vertical segment
+                        trans_x = prev[0] + lane * 0.5
+                        trans_y = prev[1] + (p[1] - prev[1]) * 0.2
+                        shifted_pts.append((trans_x, trans_y))
+                        shifted_pts.append((p[0] + lane, p[1]))
+                        prev_was_vertical = True
+                        continue
+                    else:
+                        shifted_pts.append((p[0] + lane, p[1]))
+                        continue
+                else:
+                    prev_was_vertical = False
+            shifted_pts.append(p)
+        self.route_pts = shifted_pts
         self.route_i = 0
         self.assigned_bin = bin_id
         self.target = final_target
@@ -119,32 +148,31 @@ class Truck:
 
         # service if at assigned bin
         thr = self.cfg.get("APPROACH_RADIUS_M", 3.0)
-        # Ensure threshold isn't smaller than curb offset so trucks can service from the curb
         curb_allow = float(self.cfg.get("SIDEWALK_OFFSET_M", 2.0))
         thr = max(thr, curb_allow - 0.1)
         if self.assigned_bin:
             b = next((bb for bb in bins if bb.id == self.assigned_bin), None)
-            # Consider truck "at bin" if within threshold of either curb or bin position
             at_bin = False
             if b:
+                # Check both offset position and true bin/curb position
                 if b.curb is not None and dist(self.pos, b.curb) < thr:
                     at_bin = True
                 elif dist(self.pos, b.pos) < thr:
                     at_bin = True
+                # If truck is offset but within threshold of bin/curb, snap to bin/curb for pickup
+                if at_bin:
+                    if b.curb is not None:
+                        self.pos = b.curb
+                    else:
+                        self.pos = b.pos
             if b and at_bin and b.fill > 0:
-                # snap to curb to avoid off-road departure
-                if b.curb is not None:
-                    self.pos = b.curb
                 take = min(self.cfg["TRUCK_CAPACITY"] - self.load, b.fill)
                 if take > 0:
                     self.load += take; b.fill -= take; self.stops_since_depot += 1
-                    # mark service time to help dispatch avoid immediate re-selection
                     try:
-                        # current time is injected by Simulation.step before appending
                         current_t = None
                         yield_ev = {"type": "pickup", "truck": self.tid, "bin": b.id, "amount": take}
                         yield yield_ev
-                        # If Simulation sets ev['t'] after yield, it can't update here; sim will set last_service_t
                     finally:
                         pass
                 if self.load >= self.cfg["TRUCK_CAPACITY"]:

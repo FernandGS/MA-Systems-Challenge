@@ -56,7 +56,7 @@ CONFIG = {
     "N_TRUCKS": 4,
     "TRUCK_CAPACITY": 300,
     "TRUCK_SPEED_MPS": 2.0,
-    "APPROACH_RADIUS_M": 1.2,
+    "APPROACH_RADIUS_M": 4.0,
 
     # Energy and costs
     "ENERGY_MAX": 100.0,
