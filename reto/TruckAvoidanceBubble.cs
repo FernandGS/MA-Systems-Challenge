@@ -9,13 +9,19 @@ public class TruckAvoidanceBubble : MonoBehaviour
     [Tooltip("Max lateral nudge per frame (world units)")]
     public float maxNudge = 0.15f;
 
-    static readonly int TruckLayer = -1; // optional: assign a Truck layer and filter via LayerMask if desired
+    // Note: If performance becomes an issue with many trucks, consider maintaining
+    // a static registry list instead of scanning the scene each frame.
 
     void LateUpdate()
     {
         var myPos = transform.position;
         // Find nearby trucks (simple: scan all with same component). For large counts, use a spatial partition.
-        var neighbors = FindObjectsOfType<TruckAvoidanceBubble>();
+    // Use non-obsolete API on newer Unity versions.
+#if UNITY_2023_1_OR_NEWER
+    var neighbors = Object.FindObjectsByType<TruckAvoidanceBubble>(FindObjectsSortMode.None);
+#else
+    var neighbors = FindObjectsOfType<TruckAvoidanceBubble>();
+#endif
         Vector3 accum = Vector3.zero;
         int count = 0;
         foreach (var n in neighbors)

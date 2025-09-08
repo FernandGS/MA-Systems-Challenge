@@ -1,15 +1,15 @@
 {
   "seed": 42,
   "num_agents": 4,
-  "num_waste_locations": 37,
-  "bin_capacity": 80,
+  "num_waste_locations": 36,
+  "bin_capacity": 100,
   "steps": 10000,
   "planner": "graph",
-  "truck_speed": 2.5,
+  "truck_speed": 2.0,
   "sidewalk_offset": 8.0,
   "opportunistic_fill_frac": 0.6,
-  "urgency_horizon_s": 900,
+  "urgency_horizon_s": 800,
   "coverage_bias": 0.8,
-  "service_cooldown_s": 800.0,
-  "policy": "auction"
+  "service_cooldown_s": 900.0,
+  "policy": "dqn"
 }

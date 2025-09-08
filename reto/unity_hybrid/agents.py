@@ -54,10 +54,38 @@ class Truck:
 
     def assign_target(self, route_pts: List[Point], bin_id: Optional[str], final_target: Optional[Point]):
         # de-dup small segments
-        cleaned = []
+        cleaned: List[Point] = []
         for p in route_pts:
             if not cleaned or (dist(cleaned[-1], p) > 1e-3):
                 cleaned.append(p)
+        # Optional lane offset to keep trucks on one side of the road (reduces overlap)
+        if self.cfg.get("ENABLE_LANES", False) and len(cleaned) >= 2:
+            off = float(self.cfg.get("LANE_OFFSET_M", 1.0))
+            # Deterministic lane side per truck id (numeric parity) so lanes remain consistent
+            try:
+                numeric_id = int(''.join(ch for ch in self.tid if ch.isdigit()))
+            except Exception:
+                numeric_id = 0
+            side = 1 if (numeric_id % 2 == 0) else -1
+            lane_pts: List[Point] = []
+            for i, p in enumerate(cleaned):
+                # Derive direction vector using neighbor (previous if available else next)
+                if i == 0:
+                    nxt = cleaned[i+1]
+                    dx, dy = nxt[0]-p[0], nxt[1]-p[1]
+                else:
+                    prev = cleaned[i-1]
+                    dx, dy = p[0]-prev[0], p[1]-prev[1]
+                if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+                    lane_pts.append(p)
+                    continue
+                # Treat any segment with greater |dx| as horizontal; else vertical. This enforces identical
+                # offset magnitude for both orientations and avoids jitter from ratio thresholds.
+                if abs(dx) >= abs(dy):  # horizontal travel -> shift along y
+                    lane_pts.append((p[0], p[1] + side * off))
+                else:  # vertical travel -> shift along x
+                    lane_pts.append((p[0] + side * off, p[1]))
+            cleaned = lane_pts
         self.route_pts = cleaned
         self.route_i = 0
         self.assigned_bin = bin_id

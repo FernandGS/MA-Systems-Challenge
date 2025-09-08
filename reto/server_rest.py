@@ -1,6 +1,8 @@
 import os
 import sys
 import json
+import threading
+import time
 from typing import Optional, Dict, Any
 from copy import deepcopy
 
@@ -37,6 +39,22 @@ app.add_middleware(
 # and still get updated parameters set from the index page or API.
 DEFAULT_OVERRIDES: Dict[str, Any] = {}
 DEFAULTS_FILE = os.path.join(ROOT, 'server_defaults.json')
+LAST_RESULT: Dict[str, Any] | None = None
+LAST_RESULT_META: Dict[str, Any] = {}
+
+# Async job state (single job)
+JOB_STATE: Dict[str, Any] = {
+    'id': None,
+    'status': 'idle',  # idle|running|done|error
+    'started_at': None,
+    'finished_at': None,
+    'steps': None,
+    'planner': None,
+    'config_snapshot': None,
+    'error': None
+}
+_JOB_LOCK = threading.Lock()
+_JOB_COUNTER = 0
 
 def _load_defaults_from_disk():
     global DEFAULT_OVERRIDES
@@ -139,12 +157,12 @@ def _build_agent_paths_from_events(city: 'City', sim: 'Simulation'):
 
     for rank, t in enumerate(sim.trucks):
         tid = t.tid
-        # Start at depot
+        # Start exactly at depot (no lateral offset to avoid diagonal artifacts)
         start = [int(round(city.depot[0])), int(round(city.depot[1]))]
         starts[tid] = start
         cur = (float(city.depot[0]), float(city.depot[1]))
         # Small stagger to reduce pile-ups at the depot: delay later trucks by a few frames
-        pad = max(0, min(rank, 5)) * 2  # up to 10 frames for the last few trucks
+        pad = max(0, min(rank, 5)) * 2
         path_cells = [{"x": start[0], "y": start[1]}] * (1 + pad)
 
         # Sort events chronologically
@@ -210,6 +228,90 @@ def _build_agent_paths_from_events(city: 'City', sim: 'Simulation'):
 
         tracks[tid] = path_cells
 
+    # Server-side per-step occupancy scheduler to avoid same-cell conflicts and edge swaps
+    def _schedule_tracks(tracks_in: Dict[str, list]) -> Dict[str, list]:
+        # Convert to tuple lists for easier comparison
+        tkeys = list(tracks_in.keys())
+        tracks_t = {k: [ (int(p["x"]), int(p["y"])) for p in v ] for k, v in tracks_in.items()}
+        # Tie-break order: by numeric id parsed from tid (e.g., 'T3' -> 3), fallback to index
+        def _tid_ord(tid: str, idx: int) -> int:
+            try:
+                return int(''.join(ch for ch in str(tid) if ch.isdigit()))
+            except Exception:
+                return idx
+        torder = {tid: _tid_ord(tid, i) for i, tid in enumerate(tkeys)}
+
+        changed = True
+        safety = 0
+        while changed and safety < 2000:
+            safety += 1
+            changed = False
+            # Equalize lengths by padding last cell
+            max_len = max((len(v) for v in tracks_t.values()), default=0)
+            for tid in tkeys:
+                if len(tracks_t[tid]) == 0 and max_len > 0:
+                    # if empty, seed with city.depot
+                    d = (int(round(city.depot[0])), int(round(city.depot[1])))
+                    tracks_t[tid] = [d]
+                while len(tracks_t[tid]) < max_len:
+                    tracks_t[tid].append(tracks_t[tid][-1])
+
+            # Iterate steps and resolve conflicts
+            for i in range(1, max_len):
+                # Build occupancy at this step
+                occ = {}
+                for tid in tkeys:
+                    cell = tracks_t[tid][i]
+                    occ.setdefault(cell, []).append(tid)
+
+                # Same-cell conflicts: allow only the smallest order to move; others hold
+                for cell, tids in list(occ.items()):
+                    if len(tids) <= 1:
+                        continue
+                    # Determine winners by order (lowest goes)
+                    tids_sorted = sorted(tids, key=lambda x: (torder.get(x, 0), x))
+                    winner = tids_sorted[0]
+                    for loser in tids_sorted[1:]:
+                        # Insert hold at i for loser (repeat previous cell)
+                        prev = tracks_t[loser][i-1]
+                        if tracks_t[loser][i] != prev:
+                            tracks_t[loser].insert(i, prev)
+                            changed = True
+                    if changed:
+                        break  # restart pass due to index shifts
+                if changed:
+                    break
+
+                # Edge swap conflicts: A@u->v and B@v->u
+                # Collect step transitions
+                trans = {}
+                for tid in tkeys:
+                    trans[tid] = (tracks_t[tid][i-1], tracks_t[tid][i])
+                # Check pairs
+                for a in range(len(tkeys)):
+                    for b in range(a+1, len(tkeys)):
+                        ta, tb = tkeys[a], tkeys[b]
+                        u1, v1 = trans[ta]
+                        u2, v2 = trans[tb]
+                        if u1 != v1 and u2 != v2 and u1 == v2 and v1 == u2:
+                            # Hold the higher order id
+                            hold_tid = ta if torder[ta] > torder[tb] else tb
+                            prev = tracks_t[hold_tid][i-1]
+                            if tracks_t[hold_tid][i] != prev:
+                                tracks_t[hold_tid].insert(i, prev)
+                                changed = True
+                                break
+                    if changed:
+                        break
+                if changed:
+                    break
+        # Convert back to dict lists
+        out = {}
+        for tid, arr in tracks_t.items():
+            out[tid] = [{"x": int(x), "y": int(y)} for (x, y) in arr]
+        return out
+
+    tracks = _schedule_tracks(tracks)
     return starts, tracks
 
 
@@ -366,6 +468,32 @@ def _run_simulation(cfg: Dict[str, Any], steps: int, planner: str):
     return city, sim
 
 
+def _run_simulation_background(job_id: int, cfg: Dict[str, Any], steps: int, planner: str):
+    """Background thread for async simulation jobs."""
+    global LAST_RESULT, LAST_RESULT_META, JOB_STATE
+    try:
+        city, sim = _run_simulation(cfg, steps, planner)
+        payload = _to_unity_payload(cfg, city, sim)
+        from time import time as _now
+        with _JOB_LOCK:
+            LAST_RESULT = payload
+            LAST_RESULT_META = {
+                'generated_at': _now(),
+                'steps': steps,
+                'planner': planner,
+                'config': {k: cfg[k] for k in ['N_TRUCKS','N_BINS','BIN_CAPACITY','TRUCK_SPEED_MPS','POLICY'] if k in cfg}
+            }
+            if JOB_STATE.get('id') == job_id:
+                JOB_STATE['status'] = 'done'
+                JOB_STATE['finished_at'] = _now()
+    except Exception as e:
+        with _JOB_LOCK:
+            if JOB_STATE.get('id') == job_id:
+                JOB_STATE['status'] = 'error'
+                JOB_STATE['error'] = str(e)
+                JOB_STATE['finished_at'] = time.time()
+               
+
 def _apply_overrides(cfg: Dict[str, Any], *, seed=None, num_agents=None, num_waste_locations=None,
                      bin_capacity=None, truck_speed=None, sidewalk_offset=None,
                      opportunistic_fill_frac=None, urgency_horizon_s=None, coverage_bias=None,
@@ -401,6 +529,29 @@ def _apply_overrides(cfg: Dict[str, Any], *, seed=None, num_agents=None, num_was
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/preview")
+def preview():
+    """Run a fast short simulation (default 60 steps) using current defaults for quick Unity spawn preview."""
+    from copy import deepcopy as _dc
+    cfg = _dc(CONFIG)
+    _apply_overrides(cfg,
+                     seed=DEFAULT_OVERRIDES.get('seed'),
+                     num_agents=DEFAULT_OVERRIDES.get('num_agents'),
+                     num_waste_locations=DEFAULT_OVERRIDES.get('num_waste_locations'),
+                     bin_capacity=DEFAULT_OVERRIDES.get('bin_capacity'),
+                     truck_speed=DEFAULT_OVERRIDES.get('truck_speed'),
+                     sidewalk_offset=DEFAULT_OVERRIDES.get('sidewalk_offset'),
+                     opportunistic_fill_frac=DEFAULT_OVERRIDES.get('opportunistic_fill_frac'),
+                     urgency_horizon_s=DEFAULT_OVERRIDES.get('urgency_horizon_s'),
+                     coverage_bias=DEFAULT_OVERRIDES.get('coverage_bias'),
+                     service_cooldown_s=DEFAULT_OVERRIDES.get('service_cooldown_s'),
+                     policy=DEFAULT_OVERRIDES.get('policy'))
+    steps = 60
+    planner = DEFAULT_OVERRIDES.get('planner') or 'graph'
+    city, sim = _run_simulation(cfg, steps, planner)
+    return _to_unity_payload(cfg, city, sim)
 
 
 @app.get("/config")
@@ -442,7 +593,99 @@ def set_defaults(req: DefaultsRequest):
     if req.policy is not None:
         DEFAULT_OVERRIDES['policy'] = str(req.policy)
     _save_defaults_to_disk()
-    return {"ok": True, "defaults": deepcopy(DEFAULT_OVERRIDES)}
+    # Auto-run a simulation with new defaults so Unity can fetch a ready snapshot
+    try:
+        cfg = deepcopy(CONFIG)
+        _apply_overrides(cfg,
+                         seed=DEFAULT_OVERRIDES.get('seed'),
+                         num_agents=DEFAULT_OVERRIDES.get('num_agents'),
+                         num_waste_locations=DEFAULT_OVERRIDES.get('num_waste_locations'),
+                         bin_capacity=DEFAULT_OVERRIDES.get('bin_capacity'),
+                         truck_speed=DEFAULT_OVERRIDES.get('truck_speed'),
+                         sidewalk_offset=DEFAULT_OVERRIDES.get('sidewalk_offset'),
+                         opportunistic_fill_frac=DEFAULT_OVERRIDES.get('opportunistic_fill_frac'),
+                         urgency_horizon_s=DEFAULT_OVERRIDES.get('urgency_horizon_s'),
+                         coverage_bias=DEFAULT_OVERRIDES.get('coverage_bias'),
+                         service_cooldown_s=DEFAULT_OVERRIDES.get('service_cooldown_s'),
+                         policy=DEFAULT_OVERRIDES.get('policy'))
+        steps = int(DEFAULT_OVERRIDES.get('steps') or 600)
+        planner = DEFAULT_OVERRIDES.get('planner') or 'graph'
+        city, sim = _run_simulation(cfg, steps, planner)
+        payload = _to_unity_payload(cfg, city, sim)
+        from time import time as _now
+        global LAST_RESULT, LAST_RESULT_META
+        LAST_RESULT = payload
+        LAST_RESULT_META = {
+            'generated_at': _now(),
+            'steps': steps,
+            'planner': planner,
+            'config': {k: cfg[k] for k in ['N_TRUCKS','N_BINS','BIN_CAPACITY','TRUCK_SPEED_MPS','POLICY'] if k in cfg}
+        }
+        return {"ok": True, "defaults": deepcopy(DEFAULT_OVERRIDES), "ready": True, "result": payload, "meta": LAST_RESULT_META}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "defaults": deepcopy(DEFAULT_OVERRIDES), "ready": False}
+
+@app.get("/last_result")
+def last_result():
+    if LAST_RESULT is None:
+        return {"ready": False, "message": "No simulation generated yet. POST /defaults or /simulate first."}
+    return {"ready": True, "result": LAST_RESULT, "meta": LAST_RESULT_META}
+
+
+@app.post("/simulate_async")
+def simulate_async(req: SimRequest):
+    global _JOB_COUNTER, JOB_STATE
+    with _JOB_LOCK:
+        if JOB_STATE.get('status') == 'running':
+            return {"accepted": False, "reason": "Job already running", "job": JOB_STATE}
+        _JOB_COUNTER += 1
+        job_id = _JOB_COUNTER
+        cfg = deepcopy(CONFIG)
+        _apply_overrides(cfg,
+                         seed=DEFAULT_OVERRIDES.get('seed'),
+                         num_agents=DEFAULT_OVERRIDES.get('num_agents'),
+                         num_waste_locations=DEFAULT_OVERRIDES.get('num_waste_locations'),
+                         bin_capacity=DEFAULT_OVERRIDES.get('bin_capacity'),
+                         truck_speed=DEFAULT_OVERRIDES.get('truck_speed'),
+                         sidewalk_offset=DEFAULT_OVERRIDES.get('sidewalk_offset'),
+                         opportunistic_fill_frac=DEFAULT_OVERRIDES.get('opportunistic_fill_frac'),
+                         urgency_horizon_s=DEFAULT_OVERRIDES.get('urgency_horizon_s'),
+                         coverage_bias=DEFAULT_OVERRIDES.get('coverage_bias'),
+                         service_cooldown_s=DEFAULT_OVERRIDES.get('service_cooldown_s'),
+                         policy=DEFAULT_OVERRIDES.get('policy'))
+        _apply_overrides(cfg,
+                         seed=req.seed,
+                         num_agents=req.num_agents,
+                         num_waste_locations=req.num_waste_locations,
+                         bin_capacity=req.bin_capacity,
+                         truck_speed=req.truck_speed,
+                         sidewalk_offset=req.sidewalk_offset,
+                         opportunistic_fill_frac=req.opportunistic_fill_frac,
+                         urgency_horizon_s=req.urgency_horizon_s,
+                         coverage_bias=req.coverage_bias,
+                         service_cooldown_s=req.service_cooldown_s,
+                         policy=req.policy)
+        steps = int(req.steps if req.steps is not None else (DEFAULT_OVERRIDES.get('steps') or 600))
+        planner = req.planner if req.planner is not None else (DEFAULT_OVERRIDES.get('planner') or 'graph')
+        JOB_STATE = {
+            'id': job_id,
+            'status': 'running',
+            'started_at': time.time(),
+            'finished_at': None,
+            'steps': steps,
+            'planner': planner,
+            'config_snapshot': {k: cfg.get(k) for k in ['N_TRUCKS','N_BINS','BIN_CAPACITY','TRUCK_SPEED_MPS','POLICY','SEED']},
+            'error': None
+        }
+    th = threading.Thread(target=_run_simulation_background, args=(job_id, cfg, steps, planner), daemon=True)
+    th.start()
+    return {"accepted": True, "job": JOB_STATE}
+
+
+@app.get("/job_status")
+def job_status():
+    with _JOB_LOCK:
+        return deepcopy(JOB_STATE)
 
 
 @app.post("/simulate")
@@ -661,29 +904,9 @@ def index():
             <li><a href=\"/health\">/health</a></li>
             <li><a href=\"/config\">/config</a></li>
             <li><a href=\"/schema\">/schema</a></li>
+            <li><a href=\"/preview\">/preview</a> (fast 60-step preview)</li>
             <li><a href=\"/simulate?steps=120&num_agents=3&num_waste_locations=10\">/simulate?steps=120&amp;num_agents=3&amp;num_waste_locations=10</a></li>
         </ul>
-        <div class=\"card\">
-            <h2>Test /simulate (GET)</h2>
-            <form method=\"GET\" action=\"/simulate\">
-                <div class=\"row\">
-                    <div><label>seed</label><input type=\"number\" name=\"seed\" placeholder=\"42\"></div>
-                    <div><label>num_agents</label><input type=\"number\" name=\"num_agents\" placeholder=\"3\"></div>
-                    <div><label>num_waste_locations</label><input type=\"number\" name=\"num_waste_locations\" placeholder=\"12\"></div>
-                    <div><label>bin_capacity</label><input type=\"number\" name=\"bin_capacity\" placeholder=\"100\"></div>
-                    <div><label>steps</label><input type=\"number\" name=\"steps\" placeholder=\"600\"></div>
-                    <div><label>planner</label>
-                        <select name=\"planner\">
-                            <option value=\"graph\" selected>graph</option>
-                            <option value=\"grid\">grid</option>
-                        </select>
-                    </div>
-                    <div><label>truck_speed</label><input type=\"number\" step=\"0.1\" name=\"truck_speed\" placeholder=\"6.0\"></div>
-                </div>
-                <p><button type=\"submit\">Run simulate</button></p>
-            </form>
-            <p>Use <code>POST /simulate</code> for programmatic clients.</p>
-        </div>
         <div class=\"card\">
             <h2>Set server defaults</h2>
             <p>These defaults are applied whenever requests omit a parameter. Unity can call a constant URL (<code>/simulate</code>) and your saved defaults will be used.</p>
@@ -714,6 +937,26 @@ def index():
                 <p><button type=\"submit\">Save defaults</button></p>
             </form>
             <pre id=\"defaults_out\"></pre>
+            <div id=\"defaults_run_badge\" style=\"margin-top:.5rem;padding:.3rem .6rem;display:inline-block;border:1px solid #ccc;border-radius:4px;font-size:.75rem;background:#f8f8f8;\">Idle</div>
+        </div>
+        <div class=\"card\">
+            <h2>Async simulation run</h2>
+            <p>Start a background run; poll status (Unity: GET /job_status, then /last_result).</p>
+            <form onsubmit=\"return startAsync(event)\">
+                <div class=\"row\">
+                    <div><label>steps (override)</label><input id=\"a_steps\" type=\"number\" placeholder=\"(keep)\" /></div>
+                    <div><label>planner</label>
+                        <select id=\"a_planner\">
+                            <option value=\"\">(keep)</option>
+                            <option value=\"graph\">graph</option>
+                            <option value=\"grid\">grid</option>
+                        </select>
+                    </div>
+                </div>
+                <p><button type=\"submit\">Start async run</button></p>
+            </form>
+            <pre id=\"async_status\">(idle)</pre>
+            <div id=\"run_done_badge\" style=\"margin-top:.5rem;padding:.3rem .6rem;display:inline-block;border:1px solid #ccc;border-radius:4px;font-size:.85rem;background:#f8f8f8;\">No run yet</div>
         </div>
         <script>
         async function loadDefaults(){
@@ -740,11 +983,13 @@ def index():
                     service_cooldown_s: valNum('d_cool'),
                     policy: (document.getElementById('d_policy').value || undefined)
             };
-            // remove undefined
             Object.keys(body).forEach(k=> body[k]===undefined && delete body[k]);
+            const db = document.getElementById('defaults_run_badge');
+            if(db){ db.textContent='Running...'; db.style.background='#fff7ed'; db.style.borderColor='#fb923c'; }
             const r = await fetch('/defaults', {method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(body)});
             const d = await r.json();
             document.getElementById('defaults_out').textContent = JSON.stringify(d, null, 2);
+            if(db){ if(d.ok){ db.textContent='Run complete'; db.style.background='#d1fae5'; db.style.borderColor='#10b981'; } else { db.textContent='Error'; db.style.background='#fee2e2'; db.style.borderColor='#ef4444'; } }
             return false;
         }
         function valNum(id, isFloat){
@@ -752,6 +997,11 @@ def index():
             if(!v) return undefined;
             return isFloat ? parseFloat(v) : parseInt(v,10);
         }
+        async function pollJob(){
+            try{ const r = await fetch('/job_status'); const j = await r.json(); document.getElementById('async_status').textContent = JSON.stringify(j,null,2); if(j.status==='done'||j.status==='error'){ const lr = await fetch('/last_result'); const lrj = await lr.json(); if(lrj.meta) document.getElementById('async_status').textContent = JSON.stringify({job:j,last_result:lrj.meta},null,2); const badge=document.getElementById('run_done_badge'); if(badge){ if(j.status==='done'){ badge.textContent='Run complete @ '+ new Date(j.finished_at*1000).toLocaleTimeString(); badge.style.background='#d1fae5'; badge.style.borderColor='#10b981'; } else { badge.textContent='Run error'; badge.style.background='#fee2e2'; badge.style.borderColor='#ef4444'; } } } else { const badge=document.getElementById('run_done_badge'); if(badge){ badge.textContent='Running...'; badge.style.background='#fff7ed'; badge.style.borderColor='#fb923c'; } } }catch(e){}
+        }
+        setInterval(pollJob,1000);
+        async function startAsync(ev){ ev.preventDefault(); const body={}; const s=valNum('a_steps'); if(s!==undefined) body.steps=s; const planner=document.getElementById('a_planner').value; if(planner) body.planner=planner; const r=await fetch('/simulate_async',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}); const j=await r.json(); document.getElementById('async_status').textContent=JSON.stringify(j,null,2); return false; }
         loadDefaults();
         </script>
     </body>

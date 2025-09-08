@@ -135,6 +135,7 @@ def main():
     parser.add_argument("--bins", type=int, default=15)
     parser.add_argument("--bin-cap", type=int, default=None)
     parser.add_argument("--planner", choices=["graph", "grid"], default="graph")
+    parser.add_argument("--bin-spacing", type=float, default=None, help="override MIN_BIN_SEP_M / BIN_MIN_SPACING for placement")
     parser.add_argument("--out-json", default="sim_run_pathObj.json")
     parser.add_argument("--out-log", default="full_log.json")
     args = parser.parse_args()
@@ -144,6 +145,9 @@ def main():
     cfg["N_BINS"] = args.bins
     if args.bin_cap is not None:
         cfg["BIN_CAPACITY"] = int(args.bin_cap)
+    if args.bin_spacing is not None:
+        # Use canonical key; City will also respect legacy alias if needed
+        cfg["MIN_BIN_SEP_M"] = float(args.bin_spacing)
 
     city = City(cfg)
     # Prefer agentpy if available, but keep identical logic by delegating to Simulation

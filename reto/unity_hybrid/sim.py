@@ -84,6 +84,16 @@ class Simulation:
             assigns = auction(self.bins, self.trucks, self.t, self.cfg, self._plan_route)
         for ev in assigns:
             self.events.append({"t": self.t, "type": "assign", "truck": ev["truck"], "bin": ev["bin"]})
+        # Lane assignment events (detect lateral offset on first segment)
+        if self.cfg.get("ENABLE_LANES", False):
+            for t in self.trucks:
+                if t.route_pts and len(t.route_pts) >= 2 and any(ev.get("truck") == t.tid for ev in assigns):
+                    p0, p1 = t.route_pts[0], t.route_pts[1]
+                    dx, dy = p1[0]-p0[0], p1[1]-p0[1]
+                    base_len = (dx*dx + dy*dy) ** 0.5
+                    if base_len > 0:
+                        # magnitude of offset relative to axis (heuristic: lane offset already applied)
+                        self.events.append({"t": self.t, "type": "lane_assignment", "truck": t.tid})
 
         # 3. Trucks step
         step_events = []

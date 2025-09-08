@@ -51,19 +51,19 @@ def _state_vector(truck: Truck, bins: List[BinObj], city, cfg: dict, now: float)
 class DQNManager:
     def __init__(self, cfg: dict):
         if DQNAgent is None:
-            # Constructing this without DQNAgent makes no sense; raise a friendly exception
             raise RuntimeError("DQN disabled: torch/dqn_agent.py not available. Set POLICY='auction' or install torch.")
         self.cfg = cfg
         self.k = int(cfg.get("DQN_K_CANDS", 6))
         self.action_dim = self.k + 2  # K bins, + go_depot, + idle
         self.obs_dim = 3 + 2 * self.k
-        self.train_enabled = bool(self.cfg.get("DQN_TRAIN_ENABLED", True))
         # One independent agent per truck id
         self.agents = {}
         # Per-truck transition cache
         self.prev_state = {}
         self.prev_action = {}
         self.km_prev = {}
+        # Metrics (epsilon tracking per agent id)
+        self.last_eps = {}
 
     def _ensure_dir(self, path: str):
         try:
@@ -91,8 +91,6 @@ class DQNManager:
                     agent.target_net.load_state_dict(state)
             except Exception:
                 pass
-            if not self.train_enabled:
-                agent.eps = agent.eps_min
             self.agents[tid] = agent
         return self.agents[tid]
 
@@ -104,14 +102,18 @@ class DQNManager:
     def select_and_assign(self, city, bins: List[BinObj], trucks: List[Truck], now: float, plan_route) -> List[Dict]:
         events: List[Dict] = []
         cooldown = float(self.cfg.get("SERVICE_COOLDOWN_S", 300.0))
+        min_gap = int(self.cfg.get("MIN_FOLLOW_GAP_STEPS", 0))
+        extra_hold = int(self.cfg.get("ANTI_TAILGATE_EXTRA_HOLD", 0))
+        # Build a quick occupancy map of current starting nodes (rounded positions) to discourage piling
+        occ = {(round(t.pos[0],1), round(t.pos[1],1)) for t in trucks if t.route_pts}
         for t in trucks:
             if t.assigned_bin or t.route_pts or t.assign_hold_steps > 0:
                 continue
             # Build state
             s = _state_vector(t, bins, city, self.cfg, now)
             agent = self._get_agent(t.tid)
-            use_eval = (not self.train_enabled) or bool(self.cfg.get("FORCE_EVAL_ACT", False))
-            a = agent.act_eval(s) if use_eval else agent.act(s)
+            a = agent.act(s)
+            self.last_eps[t.tid] = getattr(agent, 'eps', None)
             self.prev_state[t.tid] = s
             self.prev_action[t.tid] = a
             # Decode action
@@ -123,6 +125,12 @@ class DQNManager:
                     route = plan_route(t.pos, curb)
                     if not route or route[-1] != curb:
                         route = route + [curb]
+                    # Anti-tailgating: if another truck is already at first waypoint, insert a temporary hold
+                    if min_gap > 0 and route:
+                        first_wp = route[0]
+                        if first_wp in occ:
+                            t.assign_hold_steps = max(t.assign_hold_steps, min_gap + extra_hold)
+                            events.append({"type": "tailgate_hold", "truck": t.tid, "bin": b.id, "t": now})
                     t.assign_target(route, b.id, curb)
                     events.append({"type": "assign", "truck": t.tid, "bin": b.id, "t": now})
             elif a == self.k:
@@ -130,6 +138,10 @@ class DQNManager:
                 route = plan_route(t.pos, city.depot)
                 if not route or route[-1] != city.depot:
                     route = route + [city.depot]
+                if min_gap > 0 and route:
+                    if route[0] in occ:
+                        t.assign_hold_steps = max(t.assign_hold_steps, min_gap + extra_hold)
+                        events.append({"type": "tailgate_hold", "truck": t.tid, "bin": None, "t": now})
                 t.assign_target(route, None, city.depot)
             else:
                 # idle / no-op
@@ -137,8 +149,6 @@ class DQNManager:
         return events
 
     def end_step_and_learn(self, city, bins: List[BinObj], trucks: List[Truck], now: float, step_events: List[Dict]):
-        if not self.train_enabled:
-            return
         # Global overflow penalty for this step
         r_overflow = float(self.cfg.get("RL_REWARD_OVERFLOW", -5.0))
         step_overflows = sum(1 for e in step_events if e.get("type") == "overflow")
@@ -170,6 +180,7 @@ class DQNManager:
             agent = self._get_agent(tid)
             agent.store(self.prev_state[tid], int(self.prev_action[tid]), float(reward), s2, done)
             agent.update()
+            self.last_eps[tid] = getattr(agent, 'eps', None)
             # Periodic save
             try:
                 save_every = int(self.cfg.get("DQN_SAVE_EVERY_STEPS", 0) or 0)

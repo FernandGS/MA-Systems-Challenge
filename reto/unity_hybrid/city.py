@@ -38,20 +38,61 @@ class City:
 
     def _place_bins(self, n: int, cap: int):
         bins = []
-        for i in range(n):
+        placed: List[Point] = []
+        # Support legacy key BIN_MIN_SPACING if MIN_BIN_SEP_M not present
+        if "MIN_BIN_SEP_M" in self.cfg:
+            min_sep = float(self.cfg.get("MIN_BIN_SEP_M", 6.0))
+        else:
+            min_sep = float(self.cfg.get("BIN_MIN_SPACING", 6.0))
+        road_half = float(self.cfg.get("ROAD_HALF_WIDTH", 3.5))
+        extra_margin = float(self.cfg.get("SIDEWALK_MARGIN_M", 0.75))
+        bin_clearance = float(self.cfg.get("BIN_CLEARANCE_M", 0.0))
+        # curb_offset ensures bins are beyond roadway + margin + optional clearance
+        curb_offset = max(self.sidewalk_offset, road_half + extra_margin) + bin_clearance
+        # Try to distribute attempts across roads to avoid clustering
+        road_indices = list(range(len(self.roads)))
+        attempt = 0
+        ridx = 0
+        while len(bins) < n and attempt < n * 40:
+            attempt += 1
+            if not road_indices:
+                road_indices = list(range(len(self.roads)))
+            r = self.roads[road_indices[ridx % len(road_indices)]]
+            ridx += 1
+            (x1,y1),(x2,y2) = r.polyline
+            L = math.hypot(x2-x1,y2-y1)
+            if L < 1e-6:
+                continue
+            # avoid endpoints/intersections: keep t away from 0 and 1
+            t = self.rnd.uniform(0.15, 0.85)
+            cx = x1 + t*(x2-x1)
+            cy = y1 + t*(y2-y1)
+            # normal vector
+            nx,ny = (-(y2-y1)/L,(x2-x1)/L)
+            side = -1 if self.rnd.random()<0.5 else 1
+            pos = (cx+side*curb_offset*nx, cy+side*curb_offset*ny)
+            # spacing check vs already placed bin visual positions
+            ok = True
+            for (px,py) in placed:
+                if math.hypot(px-pos[0], py-pos[1]) < min_sep:
+                    ok = False; break
+            if not ok:
+                continue
+            bobj = {"id": f"b{len(bins)}", "pos": pos, "curb": (cx, cy), "capacity": cap, "fill": self.rnd.randint(0,cap//2)}
+            bins.append(bobj)
+            placed.append(pos)
+        # If failed to place all, fill remaining without spacing (as last resort)
+        while len(bins) < n:
             r = self.rnd.choice(self.roads)
             (x1,y1),(x2,y2) = r.polyline
+            L = math.hypot(x2-x1,y2-y1)
             t = self.rnd.uniform(0.2,0.8)
             cx = x1 + t*(x2-x1)
             cy = y1 + t*(y2-y1)
-            L = math.hypot(x2-x1,y2-y1)
             nx,ny = (-(y2-y1)/L,(x2-x1)/L) if L>1e-6 else (0.0,1.0)
             side = -1 if self.rnd.random()<0.5 else 1
-            # Keep bin off the roadway: offset beyond road half-width
-            road_half = float(self.cfg.get("ROAD_HALF_WIDTH", 3.5))
-            sidewalk = max(self.sidewalk_offset, road_half + 0.5)
-            pos = (cx+side*sidewalk*nx, cy+side*sidewalk*ny)
-            bins.append({"id": f"b{i}", "pos": pos, "curb": (cx, cy), "capacity": cap, "fill": self.rnd.randint(0,cap//2)})
+            pos = (cx+side*curb_offset*nx, cy+side*curb_offset*ny)
+            bins.append({"id": f"b{len(bins)}", "pos": pos, "curb": (cx, cy), "capacity": cap, "fill": self.rnd.randint(0,cap//2)})
         return bins
 
     def road_graph(self):

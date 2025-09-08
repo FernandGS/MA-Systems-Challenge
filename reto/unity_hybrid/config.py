@@ -44,10 +44,17 @@ CONFIG = {
         # Column x≈239.856 (full height)
         [4,9],[9,14],[14,17]
     ],
-    "DEPOT": (120.324, 124.700),
+    "DEPOT": (150.2066, 87.38293),  # updated discharging point
     "SIDEWALK_OFFSET_M": 2.0,
     # Approx half road width in Unity units to offset bins beyond roadway
     "ROAD_HALF_WIDTH": 4.0,
+    # Extra margin beyond road+sidewalk to keep bins safely off-road (helps horizontal roads)
+    "SIDEWALK_MARGIN_M": 0.75,
+    # Minimum spacing between bin placements along any road segment (alias of BIN_MIN_SPACING)
+    # If legacy config provides BIN_MIN_SPACING and this is absent, code maps it.
+    "MIN_BIN_SEP_M": 6.0,
+    # Additional clearance to push bins even further from curb (merged from BIN_CLEARANCE_M in alt configs)
+    "BIN_CLEARANCE_M": 1.0,
 
     # Bins and trucks
     "N_BINS": 12,
@@ -56,6 +63,8 @@ CONFIG = {
     "N_TRUCKS": 4,
     "TRUCK_CAPACITY": 300,
     "TRUCK_SPEED_MPS": 2.0,
+    # Radius within which a truck is considered to have 'arrived' at a bin/depot.
+    # Alternative tested value was 4.0 (more lenient). Keep tight value for precise snapping.
     "APPROACH_RADIUS_M": 1.2,
 
     # Energy and costs
@@ -105,6 +114,13 @@ CONFIG = {
     "BUFFER_SIZE": 100_000,
     "BATCH_SIZE": 128,
     "TAU": 0.005,
+    # Advanced DQN toggles
+    "DQN_DUELING": True,
+    "DQN_DOUBLE": True,
+    "DQN_PRIORITIZED": False,
+    "PRIORITY_ALPHA": 0.6,
+    "PRIORITY_BETA": 0.4,
+    "PRIORITY_BETA_INC": 1e-5,
     # Persistence
     "DQN_WEIGHTS_DIR": "dqn_weights",  # folder relative to repo root
     "DQN_SAVE_EVERY_STEPS": 200,        # save frequency during sim (steps)
@@ -112,6 +128,12 @@ CONFIG = {
     # Turn behavior
     "UTURN_PENALTY": 200.0,            # additional cost for immediate backtracking; larger -> less likely
     "FORBID_UTURN_IF_ALTERNATIVE": True, # if True, will forbid backtracking when any neighbor alternative exists
+
+    # Lane & spacing controls
+    "ENABLE_LANES": True,          # if true apply directional lateral offset so trucks keep to side
+    "LANE_OFFSET_M": 1.2,          # lateral offset magnitude from road center
+    "MIN_FOLLOW_GAP_STEPS": 1,     # minimum frame gap between trucks occupying same node sequence
+    "ANTI_TAILGATE_EXTRA_HOLD": 1, # additional hold steps inserted to enforce gap
 
     # Grid planner (optional)
     "GRID_SIZE": 150,

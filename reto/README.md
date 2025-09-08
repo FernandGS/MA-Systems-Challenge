@@ -127,3 +127,73 @@ To keep this repo lean for Unity export, you can delete or archive: `ced/`, `uni
 
 ---
 Updated on 2025‑08‑31.
+
+## Advanced DQN (Optional)
+
+Set `POLICY="dqn"` to enable the deep RL dispatcher (`DQNManager`). Key config flags in `config.py`:
+
+| Flag | Description |
+|------|-------------|
+| `DQN_DUELING` | Enable dueling network heads (value + advantage) |
+| `DQN_DOUBLE` | Use Double DQN target selection |
+| `DQN_PRIORITIZED` | Turn on prioritized replay buffer |
+| `PRIORITY_ALPHA` | Priority exponent (0 = uniform) |
+| `PRIORITY_BETA` | Initial importance-sampling beta |
+| `PRIORITY_BETA_INC` | Increment per update until 1.0 |
+| `DQN_K_CANDS` | Number of candidate bins encoded in state |
+| `RL_REWARD_*` | Reward shaping terms |
+
+Weights auto‑save to `DQN_WEIGHTS_DIR` every `DQN_SAVE_EVERY_STEPS` steps. One file per truck (independent learners).
+
+### Training Script
+
+`train_dqn.py` now supports:
+
+- Evaluation episodes (`--eval-eps N`) with epsilon forced to 0 (greedy)
+- Best checkpoint copying to `<weights>/best/`
+- JSONL metrics logging (`--log-jsonl train_metrics.jsonl`)
+- Moving average & early stopping (`--early-stop <pickup_rate>` per 1k steps, window `--ma-window`)
+
+Example:
+
+```powershell
+python .\train_dqn.py --episodes 30 --steps 2500 --eval-eps 2 --early-stop 550 --ma-window 4 --weights-dir dqn_weights
+```
+
+
+Metrics JSON lines include: episode, pickups, overflows, pickup_rate, moving average, epsilon stats.
+
+## Lane Separation & Anti‑Tailgating
+
+To reduce visual overlap and unrealistic platooning:
+
+| Config | Meaning |
+|--------|---------|
+| `ENABLE_LANES` | Apply lateral offset to each route waypoint so trucks keep to a side |
+| `LANE_OFFSET_M` | Magnitude of lateral shift from road center |
+| `MIN_FOLLOW_GAP_STEPS` | Minimum step gap before a second truck may start along an occupied first waypoint |
+| `ANTI_TAILGATE_EXTRA_HOLD` | Extra enforced hold steps if a gap violation would occur |
+
+When enabled, trucks get a small perpendicular offset; events `lane_assignment` record lane usage. If another truck just started moving from the same starting waypoint, a `tailgate_hold` event is emitted and the new truck waits (increasing `assign_hold_steps`).
+
+## New Events
+
+| Event | When |
+|-------|------|
+| `assign` | Truck assigned a bin or depot route |
+| `pickup` | Trash collected from a bin (includes `amount`) |
+| `drop` | Load dumped at depot |
+| `recharge` | Energy restored at depot |
+| `overflow` | Bin reached capacity during fill step |
+| `lane_assignment` | Route created with lane offset applied |
+| `tailgate_hold` | Assignment delayed to enforce follow gap |
+
+These appear in `events` arrays for both exporter and training logs.
+
+## Enabling / Disabling Features
+
+- Turn off lanes or anti‑tailgating by setting `ENABLE_LANES=False` or reducing gap parameters to 0.
+- Turn off advanced DQN features individually (e.g., `DQN_DUELING=False`).
+
+---
+Updated on 2025‑09‑07 (advanced DQN + lanes + anti‑tailgating + training tooling).

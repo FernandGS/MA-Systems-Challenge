@@ -45,6 +45,10 @@ def auction(bins: List[BinObj], trucks: List[Truck], now: float, cfg: dict, plan
 
     assigned_events = []
 
+    min_gap = int(cfg.get("MIN_FOLLOW_GAP_STEPS", 0))
+    extra_hold = int(cfg.get("ANTI_TAILGATE_EXTRA_HOLD", 0))
+    occ = {(round(t.pos[0],1), round(t.pos[1],1)) for t in trucks if t.route_pts}
+
     def greedy_match(bin_list, idle_trucks, apply_cov: bool):
         nonlocal assigned_events
         free_trucks = idle_trucks[:]
@@ -72,6 +76,12 @@ def auction(bins: List[BinObj], trucks: List[Truck], now: float, cfg: dict, plan
             # append precise curb point to minimize cutting corners
             if not route or route[-1] != curb:
                 route = route + [curb]
+            # Anti-tailgating: if first waypoint already occupied by moving truck, delay assignment
+            if min_gap > 0 and route:
+                first_wp = route[0]
+                if (round(first_wp[0],1), round(first_wp[1],1)) in occ:
+                    best_t.assign_hold_steps = max(best_t.assign_hold_steps, min_gap + extra_hold)
+                    assigned_events.append({"type": "tailgate_hold", "truck": best_t.tid, "bin": best_b.id})
             best_t.assign_target(route, best_b.id, curb)
             assigned_events.append({"type": "assign", "truck": best_t.tid, "bin": best_b.id})
             free_trucks.remove(best_t)
@@ -107,6 +117,11 @@ def auction(bins: List[BinObj], trucks: List[Truck], now: float, cfg: dict, plan
         route = plan_route(t.pos, curb)
         if not route or route[-1] != curb:
             route = route + [curb]
+        if min_gap > 0 and route:
+            first_wp = route[0]
+            if (round(first_wp[0],1), round(first_wp[1],1)) in occ:
+                t.assign_hold_steps = max(t.assign_hold_steps, min_gap + extra_hold)
+                assigned_events.append({"type": "tailgate_hold", "truck": t.tid, "bin": b0.id})
         t.assign_target(route, b0.id, curb)
         assigned_events.append({"type": "assign", "truck": t.tid, "bin": b0.id})
         remaining = [b for b in remaining if b.id != b0.id]

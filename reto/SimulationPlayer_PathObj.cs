@@ -392,7 +392,19 @@ public class SimulationPlayer_PathObj : MonoBehaviour
             if (cellCounts.TryGetValue(cell, out var c)) cellCounts[cell] = c + 1; else cellCounts[cell] = 1;
         }
 
-        // Second pass: move or hold based on occupancy
+        // Detect head-on swaps: A at cell X -> Y while B at cell Y -> X in the same step
+        var lastCellByAgent = new Dictionary<int, Vector2Int>(data.agents.Length);
+        foreach (var a in data.agents)
+        {
+            if (!trucks.TryGetValue(a.id, out var go)) continue;
+            // read current grid cell by snapping current world position
+            var wp = go.transform.position - worldOrigin;
+            int gx = Mathf.RoundToInt(wp.x / Mathf.Max(1e-6f, cellSize));
+            int gy = Mathf.RoundToInt(wp.z / Mathf.Max(1e-6f, cellSize));
+            lastCellByAgent[a.id] = new Vector2Int(gx, gy);
+        }
+
+        // Second pass: move or hold based on occupancy and head-on swap rule
         foreach (var a in data.agents)
         {
             if (!trucks.TryGetValue(a.id, out var go)) continue;
@@ -405,6 +417,25 @@ public class SimulationPlayer_PathObj : MonoBehaviour
             {
                 if (cellCounts.TryGetValue(cell, out var cnt) && cnt > 1)
                     hold = true;
+            }
+
+            // Head-on swap detection: if someone else is aiming for my last cell while I aim for theirs,
+            // hold the higher id to break the tie deterministically.
+            if (!hold && desiredCell.TryGetValue(a.id, out var myNext))
+            {
+                if (lastCellByAgent.TryGetValue(a.id, out var myLast))
+                {
+                    foreach (var kv in desiredCell)
+                    {
+                        int otherId = kv.Key; if (otherId == a.id) continue;
+                        var otherNext = kv.Value;
+                        if (!lastCellByAgent.TryGetValue(otherId, out var otherLast)) continue;
+                        if (myNext == otherLast && otherNext == myLast && a.id > otherId)
+                        {
+                            hold = true; break;
+                        }
+                    }
+                }
             }
 
             Vector3 target = GridToWorld(a.pathObj[idx].x, a.pathObj[idx].y);

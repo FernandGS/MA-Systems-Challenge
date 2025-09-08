@@ -2,8 +2,15 @@
 fastapi>=0.111,<1
 uvicorn[standard]>=0.23,<1
 pydantic>=2,<3
+numpy>=2,<3
 
 # Optional extras used by this repo
+# Agent-based modeling (only for Python < 3.13). Safe to skip on newer Python.
 agentpy>=0.1.7; python_version < "3.13"
-# pillow for future grid mask support (optional)
+
+# Image processing (optional; for future street mask support)
 Pillow>=10,<11
+
+# Reinforcement Learning (DQN) support — optional but required if POLICY='dqn'
+numpy>=2,<3
+torch>=2.2,<3
