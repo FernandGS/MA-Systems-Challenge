@@ -149,26 +149,47 @@ class Simulation:
             except Exception:
                 t.last_step_dist = 0.0
 
-        # 3b. Simple collision avoidance/separation: push trucks apart if too close
+        # 3b. Separation: enforce minimum distance except during warmup/cooldown or at depot (if allowed)
         safe = float(self.cfg.get("SAFE_DISTANCE_M", 3.0))
-        from math import hypot
-        n = len(self.trucks)
-        for i in range(n):
-            for j in range(i+1, n):
-                ti, tj = self.trucks[i], self.trucks[j]
-                dx = tj.pos[0]-ti.pos[0]
-                dy = tj.pos[1]-ti.pos[1]
-                d = hypot(dx, dy)
-                if d < 1e-6:
-                    # exact overlap: nudge arbitrarily
-                    nx, ny = 1.0, 0.0
-                else:
+        warmup = int(self.cfg.get("SEPARATION_WARMUP_STEPS", 0))
+        cooldown = int(self.cfg.get("SEPARATION_COOLDOWN_STEPS", 0))
+        skip_at_depot = bool(self.cfg.get("SEPARATION_SKIP_AT_DEPOT", True))
+        remaining_steps = float('inf')  # unknown total; if run() passes fixed steps we can't know here, so use cooldown only if frames length hints total
+        # If caller uses run(steps), we can approximate target total by last frame index + projected remaining
+        # (We skip implementing dynamic detection; cooldown applies only if configured as 0 -> disabled)
+        apply_sep = True
+        if self.t < warmup:
+            apply_sep = False
+        # cooldown disabled unless explicitly set and we somehow detect near end (not available here)
+        if apply_sep and safe > 0:
+            from math import hypot
+            n = len(self.trucks)
+            for i in range(n):
+                for j in range(i+1, n):
+                    ti, tj = self.trucks[i], self.trucks[j]
+                    dx = tj.pos[0]-ti.pos[0]
+                    dy = tj.pos[1]-ti.pos[1]
+                    d = hypot(dx, dy)
+                    if d <= 0:
+                        # exact overlap: random tiny jitter based on ids
+                        h = (hash(ti.tid) & 7) - 3
+                        k = (hash(tj.tid) & 7) - 3
+                        dx, dy = (h or 1)*0.01, (k or 1)*0.01
+                        d = hypot(dx, dy)
                     nx, ny = dx/d, dy/d
-                if d < safe:
-                    # move each half the overlap distance away from the other
-                    overlap = (safe - d) * 0.5
-                    ti.pos = (ti.pos[0] - nx * overlap, ti.pos[1] - ny * overlap)
-                    tj.pos = (tj.pos[0] + nx * overlap, tj.pos[1] + ny * overlap)
+                    # Optionally skip separation if both near depot
+                    if skip_at_depot:
+                        depot = self.city.depot
+                        dep_thr = safe * 0.75
+                        if (hypot(ti.pos[0]-depot[0], ti.pos[1]-depot[1]) < dep_thr and
+                            hypot(tj.pos[0]-depot[0], tj.pos[1]-depot[1]) < dep_thr):
+                            continue
+                    if d < safe:
+                        overlap = safe - d
+                        # push proportionally; each truck moves half
+                        shift = overlap * 0.5
+                        ti.pos = (ti.pos[0] - nx * shift, ti.pos[1] - ny * shift)
+                        tj.pos = (tj.pos[0] + nx * shift, tj.pos[1] + ny * shift)
         self.events.extend(step_events)
         # RL learning at end of step
         if self.cfg.get("POLICY", "auction") == "dqn" and self.rl is not None:

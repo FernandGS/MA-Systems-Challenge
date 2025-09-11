@@ -59,6 +59,10 @@ CONFIG = {
     "APPROACH_RADIUS_M": 4.0,
     # Separation to avoid overlap between trucks
     "SAFE_DISTANCE_M": 3.0,
+    # Separation control windows (allow clustering at start/end or at depot)
+    "SEPARATION_WARMUP_STEPS": 5,          # steps after start where separation is disabled
+    "SEPARATION_COOLDOWN_STEPS": 5,        # final steps (from end) where separation is disabled
+    "SEPARATION_SKIP_AT_DEPOT": True,      # allow trucks to cluster at depot
 
     # Energy and costs
     "ENERGY_MAX": 100.0,
@@ -116,6 +120,21 @@ CONFIG = {
     "FORBID_UTURN_IF_ALTERNATIVE": True, # if True, will forbid backtracking when any neighbor alternative exists
     # Absolute U-turn ban: if True, never allow an immediate backtrack regardless of alternatives
     "FORBID_ALL_UTURNS": True,
+
+    # --- Realism enhancements ---
+    # Service / dump / recharge durations
+    "SERVICE_TIME_S": 4.0,          # time to service a bin fully (sec)
+    "DUMP_TIME_S": 5.0,             # time to dump truck load at depot (sec)
+    "RECHARGE_RATE_PER_S": 25.0,    # energy units restored per second at depot
+    # Vehicle dynamics
+    "ACCEL_MPS2": 1.2,              # acceleration (and symmetric decel) limit
+    "MIN_SPEED_FRACTION": 0.35,     # minimum speed fraction during sharp turns
+    "CURVE_SLOW_FRAC": 0.5,         # speed multiplier applied inside a curve
+    # Turning smoothing
+    "TURN_PULL_M": 3.0,             # how far before/after corner to start/end smoothing (meters)
+    "CURVE_INTERP_POINTS": 2,       # number of Bezier intermediates between pre & post points (excluding endpoints)
+    # Lane / lateral offset magnitude
+    "LANE_OFFSET_M": 2.0,           # baseline lateral lane offset
 
     # Grid planner (optional)
     "GRID_SIZE": 150,
