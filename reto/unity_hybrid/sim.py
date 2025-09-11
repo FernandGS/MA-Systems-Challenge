@@ -111,6 +111,10 @@ class Simulation:
             # Skip if truck is already moving toward something to avoid constant reassign churn
             if trk.assigned_bin or trk.route_pts or trk.target is not None:
                 continue
+            # Prevent assigning same bin twice in same step
+            if bid is not None:
+                if any(t.assigned_bin == bid for t in self.trucks):
+                    continue
             if bid is None:
                 curb = self.city.depot
                 route = self._plan_route(trk.pos, curb)
@@ -240,11 +244,11 @@ class Simulation:
         # Immediate post-dump assignment (optional)
         if self.cfg.get("IMMEDIATE_POST_DUMP_ASSIGN", False) and dump_trucks:
             # Build list of candidate bins (any non-empty) not already claimed
-            already = {tr.assigned_bin for tr in self.trucks if tr.assigned_bin} 
+            already = {tr.assigned_bin for tr in self.trucks if tr.assigned_bin}
             # Avoid reassigning if truck already got a route in same step somehow
             for t in (tt for tt in self.trucks if tt.tid in dump_trucks and not tt.assigned_bin and not tt.route_pts and tt.load == 0):
                 # choose fullest bin (break ties by distance)
-                cands = [b for b in self.bins if b.fill > 0 and b.id not in already]
+                cands = [b for b in self.bins if b.fill > 0 and b.id not in already and all(tt.assigned_bin != b.id for tt in self.trucks)]
                 if not cands:
                     continue
                 cands.sort(key=lambda b: (-b.fill, ( (t.pos[0]-b.pos[0])**2 + (t.pos[1]-b.pos[1])**2 )))

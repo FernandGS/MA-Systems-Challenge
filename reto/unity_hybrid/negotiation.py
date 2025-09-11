@@ -42,6 +42,8 @@ def negotiate(bins, trucks, t_now: float, cfg: Dict, plan_route: Callable[[Point
     """
     # 1) Bins that should request service
     requests: List[Tuple[str, object]] = []
+    # Track bins already targeted by an active truck to avoid duplicate assignment
+    active_bins = {getattr(t, 'assigned_bin') for t in trucks if getattr(t, 'assigned_bin', None)}
     for b in bins:
         cap = getattr(b, 'capacity', cfg.get('BIN_CAPACITY', 100))
         last_t = getattr(b, 'last_service_t', -1e9)
@@ -49,6 +51,8 @@ def negotiate(bins, trucks, t_now: float, cfg: Dict, plan_route: Callable[[Point
         near_full = float(cfg.get('NEAR_FULL_FRAC', 0.9))
         horizon = float(cfg.get('URGENCY_HORIZON_S', 120.0))
         # Request if near full or overdue
+        if b.id in active_bins:
+            continue  # already being serviced / en-route
         if (b.fill >= near_full * cap) or ((t_now - last_t) >= horizon and b.fill > 0):
             requests.append((b.id, b))
 

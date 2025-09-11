@@ -61,65 +61,83 @@ class Truck:
     _at_depot_since: float = -1.0
 
     def _smooth_and_lane_shift(self, pts: List[Point]) -> List[Point]:
+        """Return a smoothed path offset to the RIGHT lane relative to travel direction.
+
+        Steps:
+          1. Corner smoothing with simple quadratic Beziers (centerline).
+          2. For each point, compute a representative direction (avg of prev & next).
+          3. Offset each point by lane_offset * right_perp (right-hand traffic).
+        """
         if len(pts) < 2:
             return pts
         lane_offset = float(self.cfg.get("LANE_OFFSET_M", 2.0))
-        turn_pull = float(self.cfg.get("TURN_PULL_M", 2.5))
-        curve_pts = int(self.cfg.get("CURVE_INTERP_POINTS", 1))
-        out: List[Point] = [pts[0]]
-        # Evaluate each segment, add lane offsets for vertical motion, add curve smoothing at corners
+        turn_pull = float(self.cfg.get("TURN_PULL_M", 3.0))
+        curve_pts = int(self.cfg.get("CURVE_INTERP_POINTS", 2))
+
+        # Phase 1: build smoothed centerline
+        center: List[Point] = [pts[0]]
         for i in range(1, len(pts)):
             prev = pts[i-1]; cur = pts[i]
             dx, dy = cur[0]-prev[0], cur[1]-prev[1]
             seg_len = math.hypot(dx, dy)
             if seg_len < 1e-6:
                 continue
-            is_vertical = abs(dx) < 1e-3 and abs(dy) > 1e-3
-            lane = 0.0
-            if is_vertical:
-                if dy > 0: lane = lane_offset
-                elif dy < 0: lane = -lane_offset
-            # Apply lane offset only on vertical portion
-            target_pt = (cur[0] + lane, cur[1]) if is_vertical else cur
-            # Corner smoothing: if we have a next point (forming a corner), blend via simple quadratic Bezier
+            # If interior and direction changes, smooth
             if 0 < i < len(pts)-1:
                 nxt = pts[i+1]
                 ndx, ndy = nxt[0]-cur[0], nxt[1]-cur[1]
-                if (abs(dx)>1e-3 and abs(ndx)<1e-3) or (abs(dy)>1e-3 and abs(ndy)<1e-3) or (dx*ndx + dy*ndy < 0):
-                    # A change in direction; build pre and post approach points
-                    pull_a = min(turn_pull, seg_len*0.5)
-                    nxt_len = math.hypot(ndx, ndy)
-                    pull_b = min(turn_pull, nxt_len*0.5)
-                    ax = prev[0] + dx/seg_len * (seg_len - pull_a)
-                    ay = prev[1] + dy/seg_len * (seg_len - pull_a)
-                    bx = cur[0] + (ndx/max(1e-6,nxt_len)) * pull_b
-                    by = cur[1] + (ndy/max(1e-6,nxt_len)) * pull_b
-                    A = (ax, ay)
-                    B = (cur[0], cur[1])
-                    C = (bx, by)
-                    # Append approach point if different
-                    if dist(out[-1], A) > 1e-6:
-                        out.append(A)
-                    # Bezier interpolation
-                    for k in range(1, curve_pts+1):
-                        t = k/(curve_pts+1)
-                        # Quadratic Bezier A->B->C
-                        x1 = (1-t)*A[0] + t*B[0]
-                        y1 = (1-t)*A[1] + t*B[1]
-                        x2 = (1-t)*B[0] + t*C[0]
-                        y2 = (1-t)*B[1] + t*C[1]
-                        x = (1-t)*x1 + t*x2
-                        y = (1-t)*y1 + t*y2
-                        out.append((x,y))
-                    # Add departure point
-                    out.append(C)
-                    continue
-            out.append(target_pt)
-        # De-duplicate near-identical consecutive points
-        dedup = [out[0]]
-        for p in out[1:]:
-            if dist(dedup[-1], p) > 1e-3:
-                dedup.append(p)
+                nxt_len = math.hypot(ndx, ndy)
+                if nxt_len > 1e-6:
+                    # detect turn by angle threshold
+                    dot = (dx*ndx + dy*ndy) / max(1e-6, seg_len*nxt_len)
+                    dot = max(-1.0, min(1.0, dot))
+                    angle = math.acos(dot)
+                    if angle > math.radians(10):  # turn
+                        pull_a = min(turn_pull, seg_len*0.5)
+                        pull_b = min(turn_pull, nxt_len*0.5)
+                        A = (prev[0] + dx/seg_len * (seg_len - pull_a), prev[1] + dy/seg_len * (seg_len - pull_a))
+                        B = (cur[0], cur[1])
+                        C = (cur[0] + ndx/nxt_len * pull_b, cur[1] + ndy/nxt_len * pull_b)
+                        if dist(center[-1], A) > 1e-6:
+                            center.append(A)
+                        for k in range(1, curve_pts+1):
+                            t = k/(curve_pts+1)
+                            x1 = (1-t)*A[0] + t*B[0]
+                            y1 = (1-t)*A[1] + t*B[1]
+                            x2 = (1-t)*B[0] + t*C[0]
+                            y2 = (1-t)*B[1] + t*C[1]
+                            x = (1-t)*x1 + t*x2
+                            y = (1-t)*y1 + t*y2
+                            center.append((x, y))
+                        center.append(C)
+                        continue
+            center.append(cur)
+
+        # Phase 2: lane offset to right side relative to direction
+        lane_pts: List[Point] = []
+        n = len(center)
+        for i, p in enumerate(center):
+            if n == 1:
+                lane_pts.append(p); continue
+            if i == 0:
+                vx = center[i+1][0]-p[0]; vy = center[i+1][1]-p[1]
+            elif i == n-1:
+                vx = p[0]-center[i-1][0]; vy = p[1]-center[i-1][1]
+            else:
+                vx = center[i+1][0]-center[i-1][0]; vy = center[i+1][1]-center[i-1][1]
+            norm = math.hypot(vx, vy)
+            if norm < 1e-6:
+                lane_pts.append(p); continue
+            vx /= norm; vy /= norm
+            # Right-hand traffic: right perpendicular of (vx,vy) is (vy, -vx)
+            rx, ry = vy, -vx
+            lane_pts.append((p[0] + rx*lane_offset, p[1] + ry*lane_offset))
+
+        # Phase 3: de-duplicate
+        dedup = [lane_pts[0]]
+        for q in lane_pts[1:]:
+            if dist(dedup[-1], q) > 1e-3:
+                dedup.append(q)
         return dedup
 
     def ready_after_depot(self) -> bool:
