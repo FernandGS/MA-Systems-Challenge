@@ -1,0 +1,5 @@
+agent,distance,collected,capacity,compressed_path_len,dwell_nodes,ticks_observed,moves,move_ticks,dwell_ticks,utilization,mean_dwell_at_node,pickups,dumps,assigns,overflows,recharges,intersection_wait_events,uturn_blocks,first_pickup_step,last_pickup_step,mean_interpickup_steps
+0,2664,1393,300,4664,0,4663,4663,4663,0,1.0,0.0,15,4,15,0,4,0,0,118,1993,133.92857142857142
+1,2040,790,300,4664,0,4663,4663,4663,0,1.0,0.0,11,2,11,0,2,0,0,59,1641,158.2
+2,1890,566,300,4664,0,4663,4663,4663,0,1.0,0.0,9,2,9,0,2,0,0,110,1542,179
+3,1944,859,300,4665,0,4664,4664,4664,0,1.0,0.0,9,2,9,0,2,0,0,250,1582,166.5

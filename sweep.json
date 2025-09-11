@@ -1,0 +1,61 @@
+[
+  {
+    "name": "base_h256_lr5e4_decay997",
+    "HIDDEN": 256,
+    "LR": 0.0005,
+    "EPS_DECAY": 0.997,
+    "DQN_DUELING": true,
+    "DQN_DOUBLE": true,
+    "DQN_PRIORITIZED": false,
+    "episodes": 25,
+    "steps": 1500
+  },
+  {
+    "name": "prio_h256_lr5e4_decay997",
+    "HIDDEN": 256,
+    "LR": 0.0005,
+    "EPS_DECAY": 0.997,
+    "DQN_DUELING": true,
+    "DQN_DOUBLE": true,
+    "DQN_PRIORITIZED": true,
+    "PRIORITY_ALPHA": 0.6,
+    "PRIORITY_BETA": 0.4,
+    "episodes": 25,
+    "steps": 1500
+  },
+  {
+    "name": "fast_decay_h256_lr5e4",
+    "HIDDEN": 256,
+    "LR": 0.0005,
+    "EPS_DECAY": 0.994,
+    "DQN_DUELING": true,
+    "DQN_DOUBLE": true,
+    "DQN_PRIORITIZED": false,
+    "episodes": 25,
+    "steps": 1500
+  },
+  {
+    "name": "larger_h384_lr3e4",
+    "HIDDEN": 384,
+    "LR": 0.0003,
+    "EPS_DECAY": 0.997,
+    "DQN_DUELING": true,
+    "DQN_DOUBLE": true,
+    "DQN_PRIORITIZED": false,
+    "episodes": 25,
+    "steps": 1500
+  },
+  {
+    "name": "prio_h384_lr3e4",
+    "HIDDEN": 384,
+    "LR": 0.0003,
+    "EPS_DECAY": 0.997,
+    "DQN_DUELING": true,
+    "DQN_DOUBLE": true,
+    "DQN_PRIORITIZED": true,
+    "PRIORITY_ALPHA": 0.6,
+    "PRIORITY_BETA": 0.4,
+    "episodes": 25,
+    "steps": 1500
+  }
+]
