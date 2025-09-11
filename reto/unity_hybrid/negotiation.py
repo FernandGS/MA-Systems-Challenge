@@ -30,6 +30,9 @@ def _can_accept(truck, cfg) -> bool:
         return False
     if truck.load >= cfg.get("TRUCK_CAPACITY", 300):
         return False
+    # Post-depot dwell requirement
+    if hasattr(truck, 'ready_after_depot') and not truck.ready_after_depot():
+        return False
     return True
 
 def negotiate(bins, trucks, t_now: float, cfg: Dict, plan_route: Callable[[Point, Point], List[Point]]):

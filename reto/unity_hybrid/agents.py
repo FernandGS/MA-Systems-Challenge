@@ -57,6 +57,8 @@ class Truck:
     _service_timer: float = 0.0
     _dump_timer: float = 0.0
     _recharge_rate: float = 0.0
+    idle_steps: int = 0
+    _at_depot_since: float = -1.0
 
     def _smooth_and_lane_shift(self, pts: List[Point]) -> List[Point]:
         if len(pts) < 2:
@@ -119,6 +121,13 @@ class Truck:
             if dist(dedup[-1], p) > 1e-3:
                 dedup.append(p)
         return dedup
+
+    def ready_after_depot(self) -> bool:
+        """Return True if truck has satisfied post-depot dwell time and is free to receive tasks."""
+        if self._at_depot_since < 0:
+            return True
+        dwell_req = float(self.cfg.get("DEPOT_MIN_DWELL_S", 0.0))
+        return self._at_depot_since >= dwell_req
 
     def assign_target(self, route_pts: List[Point], bin_id: Optional[str], final_target: Optional[Point]):
         # Clean + smooth path + lane shifts
@@ -191,7 +200,13 @@ class Truck:
         if dist(self.pos, tgt) < 0.4:
             self.route_i += 1
             if self.route_i >= len(self.route_pts):
+                # Route finished
                 self.state = "idle"
+                # Clear target so dispatcher sees truck as free (prevents depot target from blocking reassignment)
+                self.target = None
+                # Reset route list to signal availability
+                self.route_pts = []
+                self.route_i = 0
 
     def step(self, dt: float, bins: List[BinObj], depot: Point, plan_route: Callable[[Point, Point], List[Point]]):
         # wage per tick
@@ -205,15 +220,30 @@ class Truck:
         # at depot: dump/recharge with timing
         if dist(self.pos, depot) < 1.0:
             self.pos = depot
+            # If auto redeploy, suppress dwell timing
+            if not self.cfg.get("AUTO_REDEPLOY_FROM_DEPOT", False):
+                if self._at_depot_since < 0:
+                    self._at_depot_since = 0.0
+                else:
+                    self._at_depot_since += dt
+            else:
+                self._at_depot_since = -1.0
             # Dump phase
             if self.load > 0:
-                if self._dump_timer <= 0:
-                    self._dump_timer = float(self.cfg.get("DUMP_TIME_S",5.0))
-                self._dump_timer -= dt
-                if self._dump_timer <= 0:
+                if self.cfg.get("INSTANT_DUMP", False):
+                    # Immediate unload
                     yield {"type": "drop", "truck": self.tid, "amount": self.load}
                     self.load = 0
                     self.stops_since_depot = 0
+                    self._dump_timer = 0.0
+                else:
+                    if self._dump_timer <= 0:
+                        self._dump_timer = float(self.cfg.get("DUMP_TIME_S",5.0))
+                    self._dump_timer -= dt
+                    if self._dump_timer <= 0:
+                        yield {"type": "drop", "truck": self.tid, "amount": self.load}
+                        self.load = 0
+                        self.stops_since_depot = 0
             else:
                 self._dump_timer = 0.0
             # Recharge phase (gradual)
@@ -281,6 +311,10 @@ class Truck:
                     route = route + [depot]
                 self.assign_target(route, None, depot)
 
+        # Reset depot dwell marker if we leave depot vicinity
+        if dist(self.pos, depot) >= 1.0 and self._at_depot_since >= 0:
+            self._at_depot_since = -1.0
+
         # move
         if self.route_pts:
             self._move_along_route(dt)
@@ -290,3 +324,9 @@ class Truck:
                 route = route + [self.target]
             self.assign_target(route, self.assigned_bin, self.target)
             self._move_along_route(dt)
+
+        # Track idleness for exploration feature
+        if self.state == "idle" and not self.assigned_bin and self.target is None and not self.route_pts:
+            self.idle_steps += 1
+        else:
+            self.idle_steps = 0

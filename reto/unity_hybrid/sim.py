@@ -128,8 +128,53 @@ class Simulation:
                 trk.assign_target(route, b.id, curb)
             self.events.append({"t": self.t, "type": "assign", "truck": tid, "bin": bid})
 
+        # 2b. Exploration: send idle trucks on patrol routes
+        if self.cfg.get("EXPLORATION_ENABLED", False):
+            # Skip if DQN policy and exploration disabled for DQN
+            if not (self.cfg.get("POLICY") == "dqn" and not self.cfg.get("EXPLORATION_ALLOW_WITH_DQN", False)):
+                import random, math
+                idle_thresh = int(self.cfg.get("EXPLORATION_IDLE_THRESHOLD_STEPS", 3))
+                prob = float(self.cfg.get("EXPLORATION_PROB", 0.5))
+                min_dist = float(self.cfg.get("EXPLORATION_MIN_DIST", 20.0))
+                prefer_farthest = bool(self.cfg.get("EXPLORATION_PREFER_FARTHEST", True))
+                reserve_mult = float(self.cfg.get("EXPLORATION_ENERGY_RESERVE_MULT", 1.2))
+                energy_per_m = float(self.cfg.get("ENERGY_PER_M", 0.06))
+                reserve_m = float(self.cfg.get("ENERGY_RESERVE_M", 30.0)) * reserve_mult
+                waypoints = self.city.waypoints
+                for trk in self.trucks:
+                    if trk.assigned_bin or trk.route_pts or trk.target is not None:
+                        continue
+                    if trk.idle_steps < idle_thresh:
+                        continue
+                    # Energy check: require enough distance margin
+                    est_range_m = trk.energy / max(1e-9, energy_per_m)
+                    if est_range_m < reserve_m:
+                        continue
+                    if random.random() > prob:
+                        continue
+                    # Candidate waypoints beyond current min distance
+                    cx, cy = trk.pos
+                    candidates = []
+                    for w in waypoints:
+                        d = math.hypot(w[0]-cx, w[1]-cy)
+                        if d >= min_dist:
+                            candidates.append((d, w))
+                    if not candidates:
+                        continue
+                    if prefer_farthest:
+                        candidates.sort(reverse=True, key=lambda x: x[0])
+                        target_wp = candidates[0][1]
+                    else:
+                        target_wp = random.choice(candidates)[1]
+                    route = self._plan_route(trk.pos, target_wp)
+                    if not route or route[-1] != target_wp:
+                        route = route + [target_wp]
+                    trk.assign_target(route, None, target_wp)
+                    self.events.append({"t": self.t, "type": "explore", "truck": trk.tid, "bin": None})
+
         # 3. Trucks step
-        step_events = []
+        step_events: List[Dict] = []
+        dump_trucks = set()
         for t in self.trucks:
             t.prev_pos = t.pos
             t.prev_load = t.load
@@ -141,6 +186,8 @@ class Simulation:
                     b = next((bb for bb in self.bins if bb.id == bid), None)
                     if b is not None:
                         b.last_service_t = self.t
+                if ev.get("type") == "drop":
+                    dump_trucks.add(t.tid)
                 step_events.append(ev)
             # distance traveled for reward
             try:
@@ -190,6 +237,25 @@ class Simulation:
                         shift = overlap * 0.5
                         ti.pos = (ti.pos[0] - nx * shift, ti.pos[1] - ny * shift)
                         tj.pos = (tj.pos[0] + nx * shift, tj.pos[1] + ny * shift)
+        # Immediate post-dump assignment (optional)
+        if self.cfg.get("IMMEDIATE_POST_DUMP_ASSIGN", False) and dump_trucks:
+            # Build list of candidate bins (any non-empty) not already claimed
+            already = {tr.assigned_bin for tr in self.trucks if tr.assigned_bin} 
+            # Avoid reassigning if truck already got a route in same step somehow
+            for t in (tt for tt in self.trucks if tt.tid in dump_trucks and not tt.assigned_bin and not tt.route_pts and tt.load == 0):
+                # choose fullest bin (break ties by distance)
+                cands = [b for b in self.bins if b.fill > 0 and b.id not in already]
+                if not cands:
+                    continue
+                cands.sort(key=lambda b: (-b.fill, ( (t.pos[0]-b.pos[0])**2 + (t.pos[1]-b.pos[1])**2 )))
+                b0 = cands[0]
+                curb = getattr(b0, 'curb', b0.pos)
+                route = self._plan_route(t.pos, curb)
+                if not route or route[-1] != curb:
+                    route = route + [curb]
+                t.assign_target(route, b0.id, curb)
+                self.events.append({"t": self.t, "type": "assign", "truck": t.tid, "bin": b0.id, "immediate": True})
+                already.add(b0.id)
         self.events.extend(step_events)
         # RL learning at end of step
         if self.cfg.get("POLICY", "auction") == "dqn" and self.rl is not None:

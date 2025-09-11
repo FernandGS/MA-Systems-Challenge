@@ -125,6 +125,14 @@ CONFIG = {
     # Service / dump / recharge durations
     "SERVICE_TIME_S": 4.0,          # time to service a bin fully (sec)
     "DUMP_TIME_S": 5.0,             # time to dump truck load at depot (sec)
+    # If True, ignore DUMP_TIME_S and dump instantly (no waiting) then become available
+    "INSTANT_DUMP": True,
+    # Minimum time a truck must remain at depot after dumping before it can take a new bin
+    "DEPOT_MIN_DWELL_S": 1.0,
+    # Immediately send trucks back out after dumping (no visible stop). If True, they get a bin in same step.
+    "AUTO_REDEPLOY_FROM_DEPOT": True,
+    # Assign a new bin in the SAME step a dump occurs (reduces visible idle frame at depot)
+    "IMMEDIATE_POST_DUMP_ASSIGN": True,
     "RECHARGE_RATE_PER_S": 25.0,    # energy units restored per second at depot
     # Vehicle dynamics
     "ACCEL_MPS2": 1.2,              # acceleration (and symmetric decel) limit
@@ -135,6 +143,22 @@ CONFIG = {
     "CURVE_INTERP_POINTS": 2,       # number of Bezier intermediates between pre & post points (excluding endpoints)
     # Lane / lateral offset magnitude
     "LANE_OFFSET_M": 2.0,           # baseline lateral lane offset
+
+    # --- Exploration (idle roaming) ---
+    # Enable trucks to perform exploratory patrols when idle (no assignment & not heading to depot)
+    "EXPLORATION_ENABLED": True,
+    # Minimum consecutive idle steps before considering exploration
+    "EXPLORATION_IDLE_THRESHOLD_STEPS": 3,
+    # Probability each step (once above threshold) to start an exploration route
+    "EXPLORATION_PROB": 0.6,
+    # Minimum straight-line distance (meters) for a waypoint to qualify as exploration target
+    "EXPLORATION_MIN_DIST": 25.0,
+    # Prefer farthest waypoint (True) vs random eligible (False)
+    "EXPLORATION_PREFER_FARTHEST": True,
+    # Skip exploration if energy below this multiple of reserve distance (e.g., 1.2 * ENERGY_RESERVE_M * ENERGY_PER_M)
+    "EXPLORATION_ENERGY_RESERVE_MULT": 1.2,
+    # Allow exploration when using DQN policy (could conflict with learned decisions)
+    "EXPLORATION_ALLOW_WITH_DQN": False,
 
     # Grid planner (optional)
     "GRID_SIZE": 150,
