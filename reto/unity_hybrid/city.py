@@ -103,33 +103,38 @@ class City:
 
     def _dijkstra_no_immediate_backtrack(self, start_idx: int, goal_idx: int, prev_idx: Optional[int], uturn_penalty: Optional[float] = None):
         """Dijkstra over expanded state (node, prev) that discourages immediate backtracking (U-turns).
-        Adds a penalty when transitioning back to the previous node. Allows it if it's the only way.
+        Applies a penalty for immediate backtracking, or forbids it entirely based on config flags.
         """
         adj, _coords = self.road_graph()
         import heapq
         # State is (node, prev_node) where prev_node can be None for the start
-        start_state = (start_idx, prev_idx)
+        start_state: Tuple[int, Optional[int]] = (start_idx, prev_idx)
         if uturn_penalty is None:
             uturn_penalty = float(self.cfg.get("UTURN_PENALTY", 200.0))
         forbid_when_alt = bool(self.cfg.get("FORBID_UTURN_IF_ALTERNATIVE", True))
+        forbid_all_uturns = bool(self.cfg.get("FORBID_ALL_UTURNS", True))
+
         dist: Dict[Tuple[int, Optional[int]], float] = {start_state: 0.0}
         prv: Dict[Tuple[int, Optional[int]], Optional[Tuple[int, Optional[int]]]] = {start_state: None}
         pq: List[Tuple[float, Tuple[int, Optional[int]]]] = [(0.0, start_state)]
         best_goal_state: Optional[Tuple[int, Optional[int]]] = None
         best_goal_cost = float('inf')
+
         while pq:
             d, (u, pu) = heapq.heappop(pq)
-            if d > dist[(u, pu)]:
+            if d > dist.get((u, pu), float('inf')):
                 continue
             if u == goal_idx and d < best_goal_cost:
                 best_goal_cost = d
                 best_goal_state = (u, pu)
-                # don't break; a later path may be even cheaper due to penalties
             # Determine if there is any neighbor other than pu (previous). If so and forbid_when_alt, block backtrack.
             has_alternative = any((v2 != pu) for (v2, _w2) in adj[u])
             for v, w in adj[u]:
                 cost = w
                 if pu is not None and v == pu:
+                    if forbid_all_uturns:
+                        # Absolute ban on immediate backtracking
+                        continue
                     if forbid_when_alt and has_alternative:
                         continue  # hard forbid when there is any alternative
                     cost += float(uturn_penalty)
@@ -139,6 +144,7 @@ class City:
                     dist[sv] = nd
                     prv[sv] = (u, pu)
                     heapq.heappush(pq, (nd, sv))
+
         if best_goal_state is None:
             return None
         # Reconstruct state path back to start

@@ -57,6 +57,8 @@ CONFIG = {
     "TRUCK_CAPACITY": 300,
     "TRUCK_SPEED_MPS": 2.0,
     "APPROACH_RADIUS_M": 4.0,
+    # Separation to avoid overlap between trucks
+    "SAFE_DISTANCE_M": 3.0,
 
     # Energy and costs
     "ENERGY_MAX": 100.0,
@@ -112,6 +114,8 @@ CONFIG = {
     # Turn behavior
     "UTURN_PENALTY": 200.0,            # additional cost for immediate backtracking; larger -> less likely
     "FORBID_UTURN_IF_ALTERNATIVE": True, # if True, will forbid backtracking when any neighbor alternative exists
+    # Absolute U-turn ban: if True, never allow an immediate backtrack regardless of alternatives
+    "FORBID_ALL_UTURNS": True,
 
     # Grid planner (optional)
     "GRID_SIZE": 150,

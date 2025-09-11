@@ -5,7 +5,23 @@ from sim import Simulation
 from ap_model import WasteSimModel, ap
 
 
-def build_agent_paths(frames):
+def _project_to_roads(city: City, x: float, y: float) -> tuple[float, float]:
+    import math
+    best_p = (x, y)
+    best_d = float('inf')
+    for r in city.roads:
+        (x1,y1),(x2,y2) = r.polyline
+        vx, vy = x2-x1, y2-y1
+        wx, wy = x - x1, y - y1
+        L2 = vx*vx + vy*vy
+        t = 0.0 if L2 < 1e-9 else max(0.0, min(1.0, (wx*vx + wy*vy) / L2))
+        px, py = x1 + t*vx, y1 + t*vy
+        d = math.hypot(px-x, py-y)
+        if d < best_d:
+            best_d = d; best_p = (px, py)
+    return best_p
+
+def build_agent_paths(frames, city: City):
     # Collapse per-truck positions into pathObj arrays for Unity, keyed by truck id
     tracks = {}
     starts = {}
@@ -13,17 +29,19 @@ def build_agent_paths(frames):
         for t in fr["trucks"]:
             tid = t["id"]
             if i == 0:
-                starts[tid] = [int(round(t["x"])), int(round(t["y"]))]
+                sx, sy = _project_to_roads(city, float(t["x"]), float(t["y"]))
+                starts[tid] = [int(round(sx)) , int(round(sy))]
+            px, py = _project_to_roads(city, float(t["x"]), float(t["y"]))
             tracks.setdefault(tid, []).append({
-                "x": int(round(t["x"])),
-                "y": int(round(t["y"]))
+                "x": int(round(px)),
+                "y": int(round(py))
             })
     return starts, tracks
 
 
 def to_unity_simdata(cfg: dict, city: City, sim: Simulation):
     # Build per-agent paths and starts
-    starts, tracks = build_agent_paths(sim.frames)
+    starts, tracks = build_agent_paths(sim.frames, city)
 
     # Map string ids (e.g., 'T0', 'b3') to ints for Unity
     truck_ids = [t.tid for t in sim.trucks]

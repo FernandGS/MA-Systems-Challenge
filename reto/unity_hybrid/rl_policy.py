@@ -12,7 +12,7 @@ try:
 except Exception as e:  # pragma: no cover
     DQNAgent = None  # type: ignore
 
-from agents import Truck, BinObj, dist
+from .agents import Truck, BinObj, dist
 
 Point = Tuple[float, float]
 

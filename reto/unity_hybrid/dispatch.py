@@ -1,5 +1,5 @@
 from typing import List, Callable
-from agents import Truck, BinObj, dist
+from .agents import Truck, BinObj, dist
 
 
 def compute_due_time(bin: BinObj, inflow_rate: float, now: float) -> float:
