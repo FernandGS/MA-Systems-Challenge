@@ -124,6 +124,7 @@ CONFIG = {
     # --- Realism enhancements ---
     # Service / dump / recharge durations
     "SERVICE_TIME_S": 4.0,          # time to service a bin fully (sec)
+    "BIN_PICKUP_COOLDOWN_S": 2.0,   # cooldown after completing a bin pickup before taking a new bin
     "DUMP_TIME_S": 5.0,             # time to dump truck load at depot (sec)
     # If True, ignore DUMP_TIME_S and dump instantly (no waiting) then become available
     "INSTANT_DUMP": True,

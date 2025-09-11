@@ -59,6 +59,7 @@ class Truck:
     _recharge_rate: float = 0.0
     idle_steps: int = 0
     _at_depot_since: float = -1.0
+    _pickup_cooldown: float = 0.0  # time remaining until truck can accept a new bin after a pickup
 
     def _smooth_and_lane_shift(self, pts: List[Point]) -> List[Point]:
         """Return a smoothed path offset to the RIGHT lane relative to travel direction.
@@ -308,12 +309,16 @@ class Truck:
                     self._service_timer = 0.0
                 if self.load >= self.cfg["TRUCK_CAPACITY"]:
                     self.assigned_bin = None
+                    # start cooldown after completing service (capacity reached counts as completion)
+                    self._pickup_cooldown = float(self.cfg.get("BIN_PICKUP_COOLDOWN_S", 0.0))
                     route = plan_route(self.pos, depot)
                     if not route or route[-1] != depot:
                         route = route + [depot]
                     self.assign_target(route, None, depot)
                 elif b.fill == 0:
                     self.assigned_bin = None
+                    # bin emptied -> initiate cooldown
+                    self._pickup_cooldown = float(self.cfg.get("BIN_PICKUP_COOLDOWN_S", 0.0))
                     self.target = None
                     self.route_pts = []
                     self.route_i = 0
@@ -342,6 +347,10 @@ class Truck:
                 route = route + [self.target]
             self.assign_target(route, self.assigned_bin, self.target)
             self._move_along_route(dt)
+
+        # Decay pickup cooldown
+        if self._pickup_cooldown > 0:
+            self._pickup_cooldown = max(0.0, self._pickup_cooldown - dt)
 
         # Track idleness for exploration feature
         if self.state == "idle" and not self.assigned_bin and self.target is None and not self.route_pts:

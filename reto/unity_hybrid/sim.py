@@ -1,13 +1,22 @@
 from typing import List, Dict
 import random, json
-from .agents import Truck, BinObj
-from .dispatch import auction
-from .negotiation import negotiate
-from .rl_tabular import QManager
+try:  # Allow running as package (python -m) or as plain script
+    from .agents import Truck, BinObj  # type: ignore
+    from .dispatch import auction  # type: ignore
+    from .negotiation import negotiate  # type: ignore
+    from .rl_tabular import QManager  # type: ignore
+except ImportError:  # fallback for direct script execution
+    from agents import Truck, BinObj  # type: ignore
+    from dispatch import auction  # type: ignore
+    from negotiation import negotiate  # type: ignore
+    from rl_tabular import QManager  # type: ignore
 try:
-    from rl_policy import DQNManager
+    from rl_policy import DQNManager  # type: ignore
 except Exception:
-    DQNManager = None  # type: ignore
+    try:
+        from .rl_policy import DQNManager  # type: ignore
+    except Exception:
+        DQNManager = None  # type: ignore
 
 class Simulation:
     def __init__(self, cfg, city, planner="graph", grid_passable=None):
@@ -108,6 +117,9 @@ class Simulation:
             trk = next((tt for tt in self.trucks if tt.tid == tid), None)
             if trk is None:
                 continue
+            # Skip if truck under pickup cooldown
+            if getattr(trk, "_pickup_cooldown", 0.0) > 0:
+                continue
             # Skip if truck is already moving toward something to avoid constant reassign churn
             if trk.assigned_bin or trk.route_pts or trk.target is not None:
                 continue
@@ -147,6 +159,8 @@ class Simulation:
                 waypoints = self.city.waypoints
                 for trk in self.trucks:
                     if trk.assigned_bin or trk.route_pts or trk.target is not None:
+                        continue
+                    if getattr(trk, "_pickup_cooldown", 0.0) > 0:
                         continue
                     if trk.idle_steps < idle_thresh:
                         continue
@@ -247,6 +261,9 @@ class Simulation:
             already = {tr.assigned_bin for tr in self.trucks if tr.assigned_bin}
             # Avoid reassigning if truck already got a route in same step somehow
             for t in (tt for tt in self.trucks if tt.tid in dump_trucks and not tt.assigned_bin and not tt.route_pts and tt.load == 0):
+                # Respect pickup cooldown
+                if getattr(t, "_pickup_cooldown", 0.0) > 0:
+                    continue
                 # choose fullest bin (break ties by distance)
                 cands = [b for b in self.bins if b.fill > 0 and b.id not in already and all(tt.assigned_bin != b.id for tt in self.trucks)]
                 if not cands:

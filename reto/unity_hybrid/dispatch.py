@@ -1,5 +1,8 @@
 from typing import List, Callable
-from .agents import Truck, BinObj, dist
+try:  # package context
+    from .agents import Truck, BinObj, dist  # type: ignore
+except ImportError:  # script fallback
+    from agents import Truck, BinObj, dist  # type: ignore
 
 
 def compute_due_time(bin: BinObj, inflow_rate: float, now: float) -> float:

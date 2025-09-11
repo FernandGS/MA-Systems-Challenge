@@ -1,7 +1,12 @@
 import sys, os, json, math, argparse
-from config import CONFIG
-from city import City
-from sim import Simulation
+try:  # package context
+    from .sim import Simulation  # type: ignore
+    from .config import CONFIG  # type: ignore
+    from .city import City  # type: ignore
+except ImportError:  # script fallback
+    from sim import Simulation  # type: ignore
+    from config import CONFIG  # type: ignore
+    from city import City  # type: ignore
 from ap_model import WasteSimModel, ap
 
 

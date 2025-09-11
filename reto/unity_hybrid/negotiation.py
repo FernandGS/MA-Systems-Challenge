@@ -1,6 +1,13 @@
 from __future__ import annotations
 from typing import List, Dict, Callable, Tuple, Optional
 import math
+try:
+    from .agents import Truck  # type: ignore
+except ImportError:
+    try:
+        from agents import Truck  # type: ignore
+    except Exception:
+        Truck = None  # type: ignore
 
 Point = Tuple[float, float]
 
